@@ -57,6 +57,7 @@ RUN npm run build
 FROM base AS prod
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY migrations ./migrations
 COPY package.json ./
 USER node
 EXPOSE 3000

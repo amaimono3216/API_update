@@ -7,13 +7,22 @@ const schema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
 
-  // 以降は各モジュール実装時に必須化する（環境構築段階では任意）
+  // ① 監視・検知モジュール
+  DETECT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  /** スペック取得のスケジュール。既定は毎日 03:00 JST。 */
+  DETECT_CRON: z.string().default('0 3 * * *'),
+  DETECT_TIMEZONE: z.string().default('Asia/Tokyo'),
+  STRIPE_OPENAPI_URL: z.string().url().optional(),
+  OPENAI_OPENAPI_URL: z.string().url().optional(),
+
+  // 以降は各モジュール実装時に必須化する
   GITHUB_APP_ID: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
-  STRIPE_OPENAPI_URL: z.string().url().optional(),
-  OPENAI_OPENAPI_URL: z.string().url().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

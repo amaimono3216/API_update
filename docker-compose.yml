@@ -15,6 +15,7 @@ services:
     volumes:
       # ソースはバインドマウントでホットリロード。node_modules はイメージ側を維持する
       - ./src:/app/src
+      - ./migrations:/app/migrations
       - ./package.json:/app/package.json
       - ./tsconfig.json:/app/tsconfig.json
       - app_node_modules:/app/node_modules
@@ -34,8 +35,8 @@ services:
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:
+      # スキーマはアプリ起動時の migrations/ 適用に一本化している
       - db_data:/var/lib/postgresql/data
-      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U api_update -d api_update"]
       interval: 5s
