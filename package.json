@@ -15,10 +15,13 @@
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "seed:baseline": "tsx src/scripts/seed-baseline.ts",
     "analyze": "tsx src/scripts/analyze-local.ts",
-    "fix": "tsx src/scripts/fix-local.ts"
+    "fix": "tsx src/scripts/fix-local.ts",
+    "pipeline": "tsx src/scripts/run-pipeline.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
+    "@octokit/auth-app": "^8.3.0",
+    "@octokit/rest": "^22.0.1",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
     "ioredis": "^5.4.2",

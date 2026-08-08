@@ -196,6 +196,53 @@ LLM の編集は文字列の完全一致に依存するため、`core.autocrlf=f
 > 信頼できないリポジトリを扱う場合は、ネットワーク遮断とリソース制限つきの
 > 使い捨てサンドボックスで動かすこと。
 
+### 動作確認
+
+```bash
+docker compose cp ./path/to/target-repo app:/tmp/target
+docker compose exec app npm run fix -- <diffId> /tmp/target owner/repo
+```
+
+## ④ PR 自動生成 & 信頼性表示モジュール (PR Generator)
+
+①〜③ の結果を突き合わせて PR の内容を組み立て、GitHub に送信する。
+
+### PR 概要欄
+
+[src/pr/template.ts](src/pr/template.ts) が生成する概要欄には、レビュアーが
+「**何を根拠に、何を変えたのか**」を追跡できるよう次の 4 節を必ず含める。
+
+| 節 | 内容 |
+| --- | --- |
+| 1. API 仕様の変更概要 | 対象サービス・バージョン差分・公式 Changelog へのリンク・変更前後の表 |
+| 2. 影響を受けるファイルと修正内容 | ファイルと行番号・適用した編集・②の判定理由（折りたたみ） |
+| 3. テスト実行結果 | PASSED / FAILED・件数（`12/12 passed`）・実行コマンド・失敗時は出力 |
+| 4. この修正の信頼性について | 修正試行回数・判定件数・**手動確認が必要な箇所** |
+
+4 節目が「信頼性表示」にあたる。自動修正の限界を隠さないことを重視し、
+
+- テストが通っていない場合の警告
+- LLM 判定が未実行の場合の警告
+- `uncertain`（影響の有無を自動で判断できなかった）箇所の一覧
+
+を明示する。件数は [src/pr/test-summary.ts](src/pr/test-summary.ts) が
+node:test / Jest / Vitest / pytest / Mocha の出力から抽出する。
+
+### 送信
+
+[src/pr/publisher.ts](src/pr/publisher.ts) は送信先を差し替え可能にしている。
+テンプレート生成と送信を分離しているため、**認証情報が無くても内容を検証できる**。
+
+| 実装 | 選択条件 | 動作 |
+| --- | --- | --- |
+| `DryRunPublisher` | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` のいずれかが未設定 | 内容の生成のみ。送信しない |
+| `GitHubPublisher` | 両方が設定済み | インストールトークンで push し、PR を作成 |
+
+push はトークンを埋めた URL 経由で行い、作業ディレクトリの git 設定にトークンを残さない。
+
+> **未検証**: `GitHubPublisher` は認証情報が未設定のため、実際の GitHub API に対する
+> 動作確認ができていない。型チェックとビルドのみ通した状態。
+
 ### エンドポイント
 
 | メソッド | パス | 用途 |
@@ -206,14 +253,15 @@ LLM の編集は文字列の完全一致に依存するため、`core.autocrlf=f
 | `GET` | `/diffs/:provider` | 差分の履歴 |
 | `GET` | `/diffs/:provider/latest` | 直近の差分（変更一覧つき） |
 | `POST` | `/analyze` | ② 影響範囲の特定（`{diffId, path, name}`） |
-| `POST` | `/fix` | ②→③ を通しで実行（`{diffId, path, name}`） |
+| `POST` | `/fix` | ②→③ を通しで実行 |
+| `POST` | `/run` | ②→③→④ を通しで実行（本流の入口） |
 | `GET` | `/runs` | 実行記録の一覧（`?repository=owner/repo`） |
 
 ### 動作確認
 
 ```bash
 docker compose cp ./path/to/target-repo app:/tmp/target
-docker compose exec app npm run fix -- <diffId> /tmp/target owner/repo
+docker compose exec app npm run pipeline -- <diffId> /tmp/target owner/repo
 ```
 
 ## 開発
@@ -278,13 +326,18 @@ docker build --target prod -t api-update:prod .
     │   ├── correlate.ts    #   破壊的変更と呼び出し箇所の突合
     │   ├── llm-judge.ts    #   Claude による影響有無の判定
     │   └── analyze.ts      #   一連の処理のオーケストレーション
-    └── fixer/              # ③ AI コード自動修正 & テスト検証モジュール
-        ├── workspace.ts    #   作業コピーとブランチ管理
-        ├── edit.ts         #   完全一致置換による編集の適用
-        ├── test-runner.ts  #   テストコマンドの検出と実行
-        ├── fix-agent.ts    #   Claude による修正案の生成
-        ├── fix-loop.ts     #   修正 → テスト → 再修正のループ
-        └── fix.ts          #   一連の処理のオーケストレーション
+    ├── fixer/              # ③ AI コード自動修正 & テスト検証モジュール
+    │   ├── workspace.ts    #   作業コピーとブランチ管理
+    │   ├── edit.ts         #   完全一致置換による編集の適用
+    │   ├── test-runner.ts  #   テストコマンドの検出と実行
+    │   ├── fix-agent.ts    #   Claude による修正案の生成
+    │   ├── fix-loop.ts     #   修正 → テスト → 再修正のループ
+    │   └── fix.ts          #   一連の処理のオーケストレーション
+    └── pr/                 # ④ PR 自動生成 & 信頼性表示モジュール
+        ├── template.ts     #   PR タイトル・概要欄の生成
+        ├── test-summary.ts #   テスト出力からの件数抽出
+        ├── publisher.ts    #   送信先（dry-run / GitHub App）
+        └── publish.ts      #   一連の処理のオーケストレーション
 ```
 
 ## 環境変数

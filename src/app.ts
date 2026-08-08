@@ -11,6 +11,7 @@ import { detect } from './detector/detect.js';
 import { PROVIDERS, isProviderId } from './detector/providers.js';
 import { fix } from './fixer/fix.js';
 import { redis } from './lib/redis.js';
+import { publishPullRequest } from './pr/publish.js';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -131,6 +132,43 @@ export function buildApp(): FastifyInstance {
       diffLines: result.diff.split('\n').length,
     };
   });
+
+  /**
+   * ②→③→④ を通しで実行する。実運用ではこれが本流の入口になる。
+   * GitHub 認証情報が未設定の場合、PR の内容生成までで送信はスキップされる。
+   */
+  app.post<{ Body: { diffId?: string; path?: string; name?: string; baseBranch?: string } }>(
+    '/run',
+    async (req, reply) => {
+      const { diffId, path: repositoryPath, name, baseBranch } = req.body ?? {};
+      if (!diffId || !repositoryPath) {
+        return reply.code(400).send({ error: 'diffId と path は必須です' });
+      }
+
+      const repository = new LocalRepository(repositoryPath, name ?? repositoryPath);
+      const analysis = await analyze(diffId, repository, req.log);
+      if (analysis.affected.length === 0) {
+        return { status: 'skipped', reason: '影響を受ける箇所はありませんでした', analysis };
+      }
+
+      const run = (await listRuns(repository.name, 1))[0];
+      if (!run) return reply.code(500).send({ error: '実行記録が見つかりません' });
+
+      const fixResult = await fix(run.id, analysis, repositoryPath, req.log, { keepWorkdir: true });
+      const { plan, result } = await publishPullRequest(run.id, analysis, fixResult, req.log, {
+        ...(baseBranch ? { baseBranch } : {}),
+      });
+
+      return {
+        status: result.published ? 'pr_opened' : 'prepared',
+        pullRequest: { title: plan.title, body: plan.body, branch: plan.branch, baseBranch: plan.baseBranch },
+        published: result.published,
+        url: result.url,
+        reason: result.reason,
+        fix: { succeeded: fixResult.succeeded, attempts: fixResult.attempts.length, test: fixResult.test },
+      };
+    },
+  );
 
   return app;
 }
