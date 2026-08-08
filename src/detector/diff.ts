@@ -98,6 +98,7 @@ function toChange(
   operations: OperationRef[],
   before: JsonValue | undefined,
   after: JsonValue | undefined,
+  propertyPath?: string,
 ): BreakingChange | null {
   const severity = classify(kind, direction);
   if (severity === null) return null;
@@ -113,6 +114,7 @@ function toChange(
     severity,
     direction,
     location,
+    ...(propertyPath ? { propertyPath } : {}),
     operations: operations.slice(0, MAX_OPERATIONS_PER_CHANGE),
     before,
     after,
@@ -134,7 +136,7 @@ function deltasToChanges(
   const changes: BreakingChange[] = [];
   for (const delta of deltas) {
     const location = delta.location ? `${prefix}.${delta.location}` : prefix;
-    const change = toChange(delta.kind, direction, location, operations, delta.before, delta.after);
+    const change = toChange(delta.kind, direction, location, operations, delta.before, delta.after, delta.location);
     if (change) changes.push(change);
   }
   return changes;
