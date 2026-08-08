@@ -63,16 +63,6 @@ fetchSpec ──> saveSnapshot ──> diffOpenApi ──> saveDiff ──> (破
 参照先の変更は `components.schemas` の差分として検出し、
 [RefIndex](src/detector/ref-index.ts) が参照グラフを遡って影響する操作を特定する。
 
-### エンドポイント
-
-| メソッド | パス | 用途 |
-| --- | --- | --- |
-| `GET` | `/health` | Postgres / Redis 込みの死活確認 |
-| `GET` | `/providers` | 監視対象と最新スナップショット |
-| `POST` | `/detect/:provider` | 検知の手動実行（`stripe` / `openai`） |
-| `GET` | `/diffs/:provider` | 差分の履歴 |
-| `GET` | `/diffs/:provider/latest` | 直近の差分（変更一覧つき） |
-
 `POST /detect/:provider` の応答 `status` は次のいずれか。
 
 | status | 意味 |
@@ -91,6 +81,80 @@ fetchSpec ──> saveSnapshot ──> diffOpenApi ──> saveDiff ──> (破
 docker compose exec app npm run seed:baseline -- \
   stripe https://raw.githubusercontent.com/stripe/openapi/<sha>/openapi/spec3.json
 curl -X POST http://localhost:3000/detect/stripe
+```
+
+## ② 影響範囲特定モジュール (Impact Analyzer)
+
+検知した破壊的変更が、対象リポジトリのコードに実際の影響を与えるかを判定する。
+影響がなければここで終了し、③ 以降を起動しない（無駄な PR を防ぐ）。
+
+```
+リポジトリ走査 ──> AST スキャン ──> 破壊的変更と突合 ──> LLM 判定 ──> 実行記録
+                  SDK 呼び出し抽出   操作 / パラメータ    影響有無の確定
+```
+
+### コード解析
+
+[src/analyzer/scan-typescript.ts](src/analyzer/scan-typescript.ts) が TypeScript / JavaScript を
+AST で走査し、Stripe・OpenAI SDK の呼び出し箇所と**渡しているパラメータ名**を抽出する。
+
+型チェッカは使わず単一ファイルのパースのみで完結させている。tsconfig や node_modules の解決が
+不要になり、任意のリポジトリをそのまま走査できるため。精度は「解決したパスが実スペックに
+存在するか」で担保している。
+
+検出できるクライアント定義:
+
+```ts
+const stripe = new Stripe(key);              // import + new
+const stripe = require('stripe')(key);       // CommonJS
+this.stripe = new Stripe(key);               // クラスのプロパティ
+import { stripe } from './lib/stripe';       // 別ファイル生成（名前から推定）
+```
+
+呼び出しチェーンは [src/analyzer/sdk-map.ts](src/analyzer/sdk-map.ts) が OpenAPI 操作に対応づける。
+両 SDK とも名前空間がリソースパスと 1:1 に対応するため規則ベースで解決し、
+実スペックのパスと突き合わせて検証する。
+
+| SDK 呼び出し | 解決される操作 |
+| --- | --- |
+| `stripe.checkout.sessions.create` | `POST /v1/checkout/sessions` |
+| `stripe.charges.retrieve` | `GET /v1/charges/{charge}` |
+| `stripe.paymentIntents.create` | `POST /v1/payment_intents` |
+| `stripe.charges.capture` | `POST /v1/charges/{charge}/capture` |
+| `openai.chat.completions.create` | `POST /chat/completions` |
+| `openai.beta.threads.messages.create` | `POST /threads/{thread_id}/messages` |
+
+### 突合と LLM 判定
+
+[correlate](src/analyzer/correlate.ts) は決定的な絞り込みに徹し、影響の有無は LLM が判断する。
+
+| 分類 | 意味 |
+| --- | --- |
+| `direct` | 変更されたプロパティを実際に渡している（ほぼ確実に影響あり） |
+| `operation` | 同じ操作を呼んでいるが、当該プロパティは静的解析では見えていない |
+
+[llm-judge](src/analyzer/llm-judge.ts) は Claude Opus 5 に候補を渡し、
+`affected` / `not_affected` / `uncertain` と理由・修正方針を構造化出力で返させる。
+確信が持てない場合は `affected` ではなく `uncertain` を選ばせ、不要な PR を抑制している。
+`ANTHROPIC_API_KEY` 未設定時は判定をスキップし、全件 `uncertain` として記録する。
+
+### エンドポイント
+
+| メソッド | パス | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | Postgres / Redis 込みの死活確認 |
+| `GET` | `/providers` | 監視対象と最新スナップショット |
+| `POST` | `/detect/:provider` | ① 検知の手動実行（`stripe` / `openai`） |
+| `GET` | `/diffs/:provider` | 差分の履歴 |
+| `GET` | `/diffs/:provider/latest` | 直近の差分（変更一覧つき） |
+| `POST` | `/analyze` | ② 影響範囲の特定（`{diffId, path, name}`） |
+| `GET` | `/runs` | 実行記録の一覧（`?repository=owner/repo`） |
+
+### 動作確認
+
+```bash
+docker compose cp ./path/to/target-repo app:/tmp/target
+docker compose exec app npm run analyze -- <diffId> /tmp/target owner/repo
 ```
 
 ## 開発
@@ -141,13 +205,20 @@ docker build --target prod -t api-update:prod .
     ├── lib/redis.ts        # Redis 接続と分散ロック
     ├── scheduler/cron.ts   # 定期実行
     ├── scripts/            # 開発用スクリプト
-    └── detector/           # ① 監視・検知モジュール
-        ├── providers.ts    #   監視対象の定義
-        ├── fetch-spec.ts   #   スペック取得・パース・ハッシュ化
-        ├── schema-diff.ts  #   スキーマの再帰比較
-        ├── ref-index.ts    #   スキーマ → 参照元操作の逆引き
-        ├── diff.ts         #   ドキュメント全体の差分と深刻度判定
-        └── detect.ts       #   一連の処理のオーケストレーション
+    ├── detector/           # ① 監視・検知モジュール
+    │   ├── providers.ts    #   監視対象の定義
+    │   ├── fetch-spec.ts   #   スペック取得・パース・ハッシュ化
+    │   ├── schema-diff.ts  #   スキーマの再帰比較
+    │   ├── ref-index.ts    #   スキーマ → 参照元操作の逆引き
+    │   ├── diff.ts         #   ドキュメント全体の差分と深刻度判定
+    │   └── detect.ts       #   一連の処理のオーケストレーション
+    └── analyzer/           # ② 影響範囲特定モジュール
+        ├── repository.ts   #   解析対象リポジトリのソース取得層
+        ├── scan-typescript.ts # AST による SDK 呼び出しの抽出
+        ├── sdk-map.ts      #   呼び出しチェーン → OpenAPI 操作の対応づけ
+        ├── correlate.ts    #   破壊的変更と呼び出し箇所の突合
+        ├── llm-judge.ts    #   Claude による影響有無の判定
+        └── analyze.ts      #   一連の処理のオーケストレーション
 ```
 
 ## 環境変数

@@ -1,8 +1,11 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 
+import { analyze } from './analyzer/analyze.js';
+import { LocalRepository } from './analyzer/repository.js';
 import { env } from './config/env.js';
 import { findLatestDiff, listDiffs } from './db/diffs.js';
 import { pool } from './db/pool.js';
+import { listRuns } from './db/runs.js';
 import { findLatestSnapshot } from './db/snapshots.js';
 import { detect } from './detector/detect.js';
 import { PROVIDERS, isProviderId } from './detector/providers.js';
@@ -79,6 +82,23 @@ export function buildApp(): FastifyInstance {
     }
     return { diffs: await listDiffs(provider) };
   });
+
+  /**
+   * ② 影響範囲の特定。指定した差分がターゲットリポジトリに影響するかを判定する。
+   * GitHub App 連携までの間は、コンテナから見えるローカルパスを対象にする。
+   */
+  app.post<{ Body: { diffId?: string; path?: string; name?: string } }>('/analyze', async (req, reply) => {
+    const { diffId, path: repositoryPath, name } = req.body ?? {};
+    if (!diffId || !repositoryPath) {
+      return reply.code(400).send({ error: 'diffId と path は必須です' });
+    }
+    const repository = new LocalRepository(repositoryPath, name ?? repositoryPath);
+    return analyze(diffId, repository, req.log);
+  });
+
+  app.get<{ Querystring: { repository?: string } }>('/runs', async (req) => ({
+    runs: await listRuns(req.query.repository),
+  }));
 
   return app;
 }

@@ -65,6 +65,16 @@ export async function findLatestDiff(provider: string): Promise<DiffRowWithChang
   return rows[0] ?? null;
 }
 
+export async function findDiffById(id: string): Promise<DiffRowWithChanges | null> {
+  const { rows } = await pool.query<DiffRowWithChanges>(
+    `SELECT id, provider, from_snapshot, to_snapshot, from_version, to_version,
+            breaking_count, warning_count, created_at, changes
+       FROM api_spec_diffs WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
 export async function listDiffs(provider: string, limit = 20): Promise<DiffRow[]> {
   const { rows } = await pool.query<DiffRow>(
     `SELECT id, provider, from_snapshot, to_snapshot, from_version, to_version,

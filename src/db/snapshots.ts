@@ -57,6 +57,15 @@ export async function findPreviousSnapshot(provider: string, excludeId: string):
   return rows[0] ?? null;
 }
 
+/** スペック本体のみを取り出す（8MB 級になるため、必要なときだけ読む）。 */
+export async function getSnapshotSpec(id: string): Promise<OpenApiDocument | null> {
+  const { rows } = await pool.query<{ spec: OpenApiDocument }>(
+    'SELECT spec FROM api_spec_snapshots WHERE id = $1',
+    [id],
+  );
+  return rows[0]?.spec ?? null;
+}
+
 export async function findLatestSnapshot(provider: string): Promise<SnapshotRow | null> {
   const { rows } = await pool.query<SnapshotRow>(
     `SELECT id, provider, version, spec_hash, bytes, fetched_at

@@ -97,6 +97,19 @@ describe('方向による深刻度の判定', () => {
     assert.equal(d.changes[0]?.kind, 'required_added');
   });
 
+  it('プロパティ単位の変更は propertyPath を持つ（② の突合が依存している）', () => {
+    const d = diffOpenApi(
+      withRequestBody({ amount: { type: 'integer' }, charge: { type: 'string' } }),
+      withRequestBody({ charge: { type: 'string' } }),
+    );
+    assert.equal(d.changes[0]?.propertyPath, 'amount');
+  });
+
+  it('エンドポイント自体の廃止は propertyPath を持たない', () => {
+    const d = diffOpenApi(doc({ paths: { '/v1/a': { get: {} } } }), doc({ paths: {} }));
+    assert.equal(d.changes[0]?.propertyPath, undefined);
+  });
+
   it('レスポンスへの必須追加は破壊的ではない', () => {
     const withResponse = (required: string[]): OpenApiDocument =>
       doc({

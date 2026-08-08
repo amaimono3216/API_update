@@ -86,6 +86,12 @@ export interface BreakingChange {
   direction: 'request' | 'response' | 'both';
   /** 変更箇所を一意に指す JSON Pointer 風のロケーション。例: `paths./v1/charges.post.requestBody.amount` */
   location: string;
+  /**
+   * スキーマ内での相対プロパティパス（例: `line_items.[].amount`）。
+   * ② 影響範囲特定モジュールが、呼び出し側で実際に渡している引数名と突き合わせるために使う。
+   * エンドポイント自体の廃止など、プロパティ単位でない変更では undefined。
+   */
+  propertyPath?: string;
   /** 影響を受ける API 操作。schema 由来の変更は逆引きインデックスで補完される。 */
   operations: OperationRef[];
   before: JsonValue | undefined;
