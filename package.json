@@ -14,7 +14,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "seed:baseline": "tsx src/scripts/seed-baseline.ts",
-    "analyze": "tsx src/scripts/analyze-local.ts"
+    "analyze": "tsx src/scripts/analyze-local.ts",
+    "fix": "tsx src/scripts/fix-local.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

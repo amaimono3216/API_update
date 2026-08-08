@@ -9,6 +9,7 @@ import { listRuns } from './db/runs.js';
 import { findLatestSnapshot } from './db/snapshots.js';
 import { detect } from './detector/detect.js';
 import { PROVIDERS, isProviderId } from './detector/providers.js';
+import { fix } from './fixer/fix.js';
 import { redis } from './lib/redis.js';
 
 export function buildApp(): FastifyInstance {
@@ -99,6 +100,37 @@ export function buildApp(): FastifyInstance {
   app.get<{ Querystring: { repository?: string } }>('/runs', async (req) => ({
     runs: await listRuns(req.query.repository),
   }));
+
+  /**
+   * ③ 影響ありと判定された箇所を修正し、リポジトリ既存のテストで検証する。
+   * diff は巨大になりうるため、応答には要約と diff の行数のみを含める。
+   */
+  app.post<{ Body: { diffId?: string; path?: string; name?: string } }>('/fix', async (req, reply) => {
+    const { diffId, path: repositoryPath, name } = req.body ?? {};
+    if (!diffId || !repositoryPath) {
+      return reply.code(400).send({ error: 'diffId と path は必須です' });
+    }
+
+    const repository = new LocalRepository(repositoryPath, name ?? repositoryPath);
+    const analysis = await analyze(diffId, repository, req.log);
+    if (analysis.affected.length === 0) {
+      return { status: 'skipped', reason: '影響を受ける箇所はありませんでした', analysis };
+    }
+
+    const run = (await listRuns(repository.name, 1))[0];
+    if (!run) return reply.code(500).send({ error: '実行記録が見つかりません' });
+
+    const result = await fix(run.id, analysis, repositoryPath, req.log, { keepWorkdir: true });
+    return {
+      status: result.succeeded ? 'fixed' : 'failed',
+      branch: result.branch,
+      attempts: result.attempts.length,
+      edits: result.edits,
+      test: result.test,
+      workdir: result.workdir,
+      diffLines: result.diff.split('\n').length,
+    };
+  });
 
   return app;
 }

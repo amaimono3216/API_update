@@ -138,6 +138,64 @@ import { stripe } from './lib/stripe';       // 別ファイル生成（名前�
 確信が持てない場合は `affected` ではなく `uncertain` を選ばせ、不要な PR を抑制している。
 `ANTHROPIC_API_KEY` 未設定時は判定をスキップし、全件 `uncertain` として記録する。
 
+### 動作確認
+
+```bash
+docker compose cp ./path/to/target-repo app:/tmp/target
+docker compose exec app npm run analyze -- <diffId> /tmp/target owner/repo
+```
+
+## ③ AI コード自動修正 & テスト検証モジュール (Fix Agent)
+
+② が「影響あり」と判定した箇所を、作業ブランチ上で修正しテストで検証する。
+
+```
+作業ブランチ作成 ──> 修正案生成 ──> 編集を適用 ──> テスト実行 ──┬─ 成功 ─> コミット・diff
+   （git clone）      （LLM）      （完全一致置換）              │
+                          ↑                                     └─ 失敗 ─> フィードバックして再修正
+                          └──────── エラーログ ────────────────────  （最大 3 回）
+```
+
+### 作業コピー
+
+[src/fixer/workspace.ts](src/fixer/workspace.ts) が対象リポジトリを clone し、
+`api-update/stripe-2026-07-29.dahlia` 形式のブランチを切る。**元のリポジトリは書き換えない**ため、
+修正が失敗しても影響が残らず、成功時はそのまま diff を取り出せる（④ PR 生成モジュールが利用する）。
+git 管理下でないディレクトリはコピーして初期化する。
+
+LLM の編集は文字列の完全一致に依存するため、`core.autocrlf=false` を設定して改行コードを保持する。
+
+### 編集の適用
+
+[src/fixer/edit.ts](src/fixer/edit.ts) は LLM が生成した `oldString` / `newString` を
+完全一致置換として適用する。ファイル全体を書き換えさせるより安全で、
+
+- 一致しない
+- 複数箇所に一致する（置換対象が曖昧）
+
+といった失敗が検出可能な形で返るため、そのまま次の試行へのフィードバックになる。
+作業ディレクトリ外へのパスは即座にエラーとする。
+
+### テスト検証と再修正ループ
+
+[src/fixer/test-runner.ts](src/fixer/test-runner.ts) がリポジトリ既存のテストコマンドを検出する。
+
+| 検出条件 | コマンド |
+| --- | --- |
+| `package.json` に `scripts.test` | `npm test` |
+| `pyproject.toml` / `pytest.ini` 等 | `pytest -q` |
+| `go.mod` | `go test ./...` |
+| `Cargo.toml` | `cargo test` |
+
+テストが失敗した場合、出力の末尾を LLM にフィードバックして再修正する（**最大 3 回**）。
+ファイル内容は毎回作業コピーから読み直すため、LLM は常に前回の編集が反映された状態を見て判断する。
+
+> **セキュリティ上の注意**: このモジュールは対象リポジトリのコードを実行する。
+> シェルを介さない起動（引数配列で `spawn`）、タイムアウト、出力量の上限、
+> 自プロセスの環境変数（`NODE_OPTIONS` / `npm_*` 等）の遮断は行っているが、
+> 信頼できないリポジトリを扱う場合は、ネットワーク遮断とリソース制限つきの
+> 使い捨てサンドボックスで動かすこと。
+
 ### エンドポイント
 
 | メソッド | パス | 用途 |
@@ -148,13 +206,14 @@ import { stripe } from './lib/stripe';       // 別ファイル生成（名前�
 | `GET` | `/diffs/:provider` | 差分の履歴 |
 | `GET` | `/diffs/:provider/latest` | 直近の差分（変更一覧つき） |
 | `POST` | `/analyze` | ② 影響範囲の特定（`{diffId, path, name}`） |
+| `POST` | `/fix` | ②→③ を通しで実行（`{diffId, path, name}`） |
 | `GET` | `/runs` | 実行記録の一覧（`?repository=owner/repo`） |
 
 ### 動作確認
 
 ```bash
 docker compose cp ./path/to/target-repo app:/tmp/target
-docker compose exec app npm run analyze -- <diffId> /tmp/target owner/repo
+docker compose exec app npm run fix -- <diffId> /tmp/target owner/repo
 ```
 
 ## 開発
@@ -212,13 +271,20 @@ docker build --target prod -t api-update:prod .
     │   ├── ref-index.ts    #   スキーマ → 参照元操作の逆引き
     │   ├── diff.ts         #   ドキュメント全体の差分と深刻度判定
     │   └── detect.ts       #   一連の処理のオーケストレーション
-    └── analyzer/           # ② 影響範囲特定モジュール
-        ├── repository.ts   #   解析対象リポジトリのソース取得層
-        ├── scan-typescript.ts # AST による SDK 呼び出しの抽出
-        ├── sdk-map.ts      #   呼び出しチェーン → OpenAPI 操作の対応づけ
-        ├── correlate.ts    #   破壊的変更と呼び出し箇所の突合
-        ├── llm-judge.ts    #   Claude による影響有無の判定
-        └── analyze.ts      #   一連の処理のオーケストレーション
+    ├── analyzer/           # ② 影響範囲特定モジュール
+    │   ├── repository.ts   #   解析対象リポジトリのソース取得層
+    │   ├── scan-typescript.ts # AST による SDK 呼び出しの抽出
+    │   ├── sdk-map.ts      #   呼び出しチェーン → OpenAPI 操作の対応づけ
+    │   ├── correlate.ts    #   破壊的変更と呼び出し箇所の突合
+    │   ├── llm-judge.ts    #   Claude による影響有無の判定
+    │   └── analyze.ts      #   一連の処理のオーケストレーション
+    └── fixer/              # ③ AI コード自動修正 & テスト検証モジュール
+        ├── workspace.ts    #   作業コピーとブランチ管理
+        ├── edit.ts         #   完全一致置換による編集の適用
+        ├── test-runner.ts  #   テストコマンドの検出と実行
+        ├── fix-agent.ts    #   Claude による修正案の生成
+        ├── fix-loop.ts     #   修正 → テスト → 再修正のループ
+        └── fix.ts          #   一連の処理のオーケストレーション
 ```
 
 ## 環境変数

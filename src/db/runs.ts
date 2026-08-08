@@ -1,6 +1,13 @@
 import { pool } from './pool.js';
 
-export type RunStatus = 'analyzing' | 'detected' | 'fixing' | 'pr_opened' | 'skipped' | 'failed';
+export type RunStatus =
+  | 'analyzing'
+  | 'detected'
+  | 'fixing'
+  | 'fixed'
+  | 'pr_opened'
+  | 'skipped'
+  | 'failed';
 
 export interface RunRow {
   id: string;
@@ -31,17 +38,25 @@ export async function createRun(params: {
 
 export async function updateRun(
   id: string,
-  patch: { status?: RunStatus; impact?: unknown; prUrl?: string; error?: string },
+  patch: { status?: RunStatus; impact?: unknown; fix?: unknown; prUrl?: string; error?: string },
 ): Promise<void> {
   await pool.query(
     `UPDATE api_update_runs
         SET status     = COALESCE($2, status),
             impact     = COALESCE($3::jsonb, impact),
-            pr_url     = COALESCE($4, pr_url),
-            error      = COALESCE($5, error),
+            fix        = COALESCE($4::jsonb, fix),
+            pr_url     = COALESCE($5, pr_url),
+            error      = COALESCE($6, error),
             updated_at = now()
       WHERE id = $1`,
-    [id, patch.status ?? null, patch.impact === undefined ? null : JSON.stringify(patch.impact), patch.prUrl ?? null, patch.error ?? null],
+    [
+      id,
+      patch.status ?? null,
+      patch.impact === undefined ? null : JSON.stringify(patch.impact),
+      patch.fix === undefined ? null : JSON.stringify(patch.fix),
+      patch.prUrl ?? null,
+      patch.error ?? null,
+    ],
   );
 }
 
