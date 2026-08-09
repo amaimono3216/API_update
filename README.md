@@ -243,6 +243,68 @@ push はトークンを埋めた URL 経由で行い、作業ディレクトリ�
 > **未検証**: `GitHubPublisher` は認証情報が未設定のため、実際の GitHub API に対する
 > 動作確認ができていない。型チェックとビルドのみ通した状態。
 
+### 動作確認
+
+```bash
+docker compose cp ./path/to/target-repo app:/tmp/target
+docker compose exec app npm run pipeline -- <diffId> /tmp/target owner/repo
+```
+
+## Webhook 受信
+
+GitHub App からの Webhook を `POST /webhooks/github` で受ける。
+
+```
+署名検証 ──> 配信 ID で重複排除 ──> イベント処理 ──> 通知
+（HMAC）      （再送対策）
+```
+
+### 署名検証
+
+[src/webhook/verify.ts](src/webhook/verify.ts) が `X-Hub-Signature-256` を検証する。
+署名は**生のリクエストボディ**に対する HMAC-SHA256 のため、JSON へパースする前の
+バイト列で検証する必要がある（[src/app.ts](src/app.ts) の content type parser で元のバッファを保持している）。
+比較はタイミング攻撃を避けるため `timingSafeEqual` で定数時間で行う。
+
+`GITHUB_WEBHOOK_SECRET` が未設定の場合、このエンドポイントは 503 を返す。
+
+### 重複排除
+
+GitHub は配信失敗時に**同じ `X-GitHub-Delivery` で再送する**ため、`webhook_deliveries`
+テーブルの一意制約で冪等性を担保する。再送は `{"status":"duplicate"}` を返して処理しない。
+
+### 処理するイベント
+
+| イベント | 動作 |
+| --- | --- |
+| `pull_request` (closed) | 自動生成 PR の結末を実行記録に反映（`pr_merged` / `pr_closed`）。マージ時は通知 |
+| `installation` / `installation_repositories` | インストール状況を記録 |
+| `ping` | 受理のみ |
+| その他 | 受理して無視（GitHub 側でイベント種別を絞れない設定に備える） |
+
+## 通知
+
+[src/notify/](src/notify/) が節目ごとに通知する。**通知の失敗で本流は止めない**
+（検知や修正の結果は DB に残るため）。
+
+| 実装 | 選択条件 |
+| --- | --- |
+| `SlackNotifier` | `SLACK_WEBHOOK_URL` が設定済み |
+| `LogNotifier` | 未設定（ログ出力にフォールバック） |
+
+通知する出来事:
+
+| 種別 | タイミング |
+| --- | --- |
+| `breaking_detected` | ① が破壊的変更を検知したとき |
+| `no_impact` | ② が「影響なし」と判定したとき |
+| `pr_opened` | ④ が PR を作成したとき（テスト未通過なら警告つき） |
+| `pr_prepared` | ④ が内容生成のみで送信をスキップしたとき |
+| `pr_merged` | Webhook で PR のマージを受信したとき |
+
+変更なし・後方互換の変更は通知しない。通知が多いと読まれなくなり、
+肝心の破壊的変更を見落とすため。
+
 ### エンドポイント
 
 | メソッド | パス | 用途 |
@@ -256,13 +318,8 @@ push はトークンを埋めた URL 経由で行い、作業ディレクトリ�
 | `POST` | `/fix` | ②→③ を通しで実行 |
 | `POST` | `/run` | ②→③→④ を通しで実行（本流の入口） |
 | `GET` | `/runs` | 実行記録の一覧（`?repository=owner/repo`） |
-
-### 動作確認
-
-```bash
-docker compose cp ./path/to/target-repo app:/tmp/target
-docker compose exec app npm run pipeline -- <diffId> /tmp/target owner/repo
-```
+| `POST` | `/webhooks/github` | GitHub Webhook の受信口 |
+| `GET` | `/webhooks/deliveries` | 受信した Webhook の履歴 |
 
 ## 開発
 
@@ -333,11 +390,19 @@ docker build --target prod -t api-update:prod .
     │   ├── fix-agent.ts    #   Claude による修正案の生成
     │   ├── fix-loop.ts     #   修正 → テスト → 再修正のループ
     │   └── fix.ts          #   一連の処理のオーケストレーション
-    └── pr/                 # ④ PR 自動生成 & 信頼性表示モジュール
-        ├── template.ts     #   PR タイトル・概要欄の生成
-        ├── test-summary.ts #   テスト出力からの件数抽出
-        ├── publisher.ts    #   送信先（dry-run / GitHub App）
-        └── publish.ts      #   一連の処理のオーケストレーション
+    ├── pr/                 # ④ PR 自動生成 & 信頼性表示モジュール
+    │   ├── template.ts     #   PR タイトル・概要欄の生成
+    │   ├── test-summary.ts #   テスト出力からの件数抽出
+    │   ├── publisher.ts    #   送信先（dry-run / GitHub App）
+    │   └── publish.ts      #   一連の処理のオーケストレーション
+    ├── webhook/            # GitHub Webhook の受信
+    │   ├── verify.ts       #   HMAC-SHA256 による署名検証
+    │   ├── github.ts       #   イベントごとの処理
+    │   └── run-store.ts    #   実行記録ストアの DB 実装
+    └── notify/             # 通知
+        ├── messages.ts     #   Slack メッセージの組み立て
+        ├── notifier.ts     #   送信先（Slack / ログ）
+        └── dispatch.ts     #   通知すべき出来事の判定
 ```
 
 ## 環境変数
