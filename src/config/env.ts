@@ -21,10 +21,14 @@ const schema = z.object({
   // ② 影響範囲特定モジュール（未設定の場合、LLM 判定はスキップされる）
   ANTHROPIC_API_KEY: z.string().optional(),
 
-  // 以降は各モジュール実装時に必須化する
+  // ④ PR 生成モジュール（未設定の場合、PR 内容の生成のみ行い送信はスキップ）
   GITHUB_APP_ID: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+  /** Webhook 受信の署名検証に使う。未設定の場合、受信エンドポイントは 503 を返す。 */
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
+
+  /** 通知先。未設定の場合はログ出力にフォールバックする。 */
+  SLACK_WEBHOOK_URL: z.url().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

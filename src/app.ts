@@ -1,17 +1,23 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
 import { analyze } from './analyzer/analyze.js';
 import { LocalRepository } from './analyzer/repository.js';
 import { env } from './config/env.js';
-import { findLatestDiff, listDiffs } from './db/diffs.js';
+import { findDiffById, findLatestDiff, listDiffs } from './db/diffs.js';
 import { pool } from './db/pool.js';
 import { listRuns } from './db/runs.js';
 import { findLatestSnapshot } from './db/snapshots.js';
+import { listDeliveries, recordDelivery } from './db/webhooks.js';
 import { detect } from './detector/detect.js';
 import { PROVIDERS, isProviderId } from './detector/providers.js';
 import { fix } from './fixer/fix.js';
 import { redis } from './lib/redis.js';
+import { notifyDetection } from './notify/dispatch.js';
+import { createNotifier } from './notify/notifier.js';
 import { publishPullRequest } from './pr/publish.js';
+import { handleGitHubEvent, repositoryOf, type GitHubPayload } from './webhook/github.js';
+import { dbRunStore } from './webhook/run-store.js';
+import { verifySignature } from './webhook/verify.js';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -23,6 +29,23 @@ export function buildApp(): FastifyInstance {
     },
     // Stripe のスペックは 8MB 超。将来の Webhook ペイロードも見込んで上限を上げる
     bodyLimit: 16 * 1024 * 1024,
+  });
+
+  /**
+   * Webhook の署名検証は生のバイト列に対して行う必要があるため、
+   * JSON をパースしつつ元のバッファも保持する。
+   */
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+    (req as FastifyRequest & { rawBody?: Buffer }).rawBody = body as Buffer;
+    if ((body as Buffer).length === 0) {
+      done(null, undefined);
+      return;
+    }
+    try {
+      done(null, JSON.parse((body as Buffer).toString('utf8')));
+    } catch (error) {
+      done(error as Error, undefined);
+    }
   });
 
   app.get('/health', async (_req, reply) => {
@@ -63,6 +86,7 @@ export function buildApp(): FastifyInstance {
       return reply.code(404).send({ error: `未対応のプロバイダです: ${provider}` });
     }
     const outcome = await detect(provider, req.log);
+    await notifyDetection(outcome, createNotifier(req.log));
     return reply.code(outcome.status === 'locked' ? 409 : 200).send(outcome);
   });
 
@@ -101,6 +125,52 @@ export function buildApp(): FastifyInstance {
   app.get<{ Querystring: { repository?: string } }>('/runs', async (req) => ({
     runs: await listRuns(req.query.repository),
   }));
+
+  /**
+   * GitHub App からの Webhook 受信口。
+   *
+   * 署名を検証し、配信 ID で重複を弾いてからイベントを処理する。
+   * GitHub は 10 秒以内の応答を期待するため、重い処理はここでは行わない。
+   */
+  app.post('/webhooks/github', async (req, reply) => {
+    if (!env.GITHUB_WEBHOOK_SECRET) {
+      return reply.code(503).send({ error: 'GITHUB_WEBHOOK_SECRET が未設定のため受信できません' });
+    }
+
+    const rawBody = (req as FastifyRequest & { rawBody?: Buffer }).rawBody;
+    const signature = req.headers['x-hub-signature-256'];
+    if (!rawBody || !verifySignature(rawBody, typeof signature === 'string' ? signature : undefined, env.GITHUB_WEBHOOK_SECRET)) {
+      req.log.warn({ ip: req.ip }, 'Webhook の署名検証に失敗しました');
+      return reply.code(401).send({ error: '署名が不正です' });
+    }
+
+    const event = req.headers['x-github-event'];
+    const deliveryId = req.headers['x-github-delivery'];
+    if (typeof event !== 'string' || typeof deliveryId !== 'string') {
+      return reply.code(400).send({ error: 'X-GitHub-Event / X-GitHub-Delivery ヘッダが必要です' });
+    }
+
+    const payload = (req.body ?? {}) as GitHubPayload;
+    const isFirstDelivery = await recordDelivery({
+      deliveryId,
+      event,
+      action: payload.action,
+      repository: repositoryOf(payload),
+    });
+    if (!isFirstDelivery) {
+      req.log.info({ deliveryId, event }, '再送された Webhook のため処理をスキップしました');
+      return { status: 'duplicate' };
+    }
+
+    const result = await handleGitHubEvent(event, payload, {
+      log: req.log,
+      notifier: createNotifier(req.log),
+      runs: dbRunStore,
+    });
+    return { status: result.handled ? 'handled' : 'ignored', detail: result.detail };
+  });
+
+  app.get('/webhooks/deliveries', async () => ({ deliveries: await listDeliveries() }));
 
   /**
    * ③ 影響ありと判定された箇所を修正し、リポジトリ既存のテストで検証する。
@@ -145,9 +215,19 @@ export function buildApp(): FastifyInstance {
         return reply.code(400).send({ error: 'diffId と path は必須です' });
       }
 
+      const notifier = createNotifier(req.log);
       const repository = new LocalRepository(repositoryPath, name ?? repositoryPath);
       const analysis = await analyze(diffId, repository, req.log);
+
       if (analysis.affected.length === 0) {
+        const diff = await findDiffById(diffId);
+        await notifier.notify({
+          type: 'no_impact',
+          provider: diff?.provider ?? 'unknown',
+          toVersion: diff?.to_version ?? 'unknown',
+          repository: repository.name,
+          callSites: analysis.callSites,
+        });
         return { status: 'skipped', reason: '影響を受ける箇所はありませんでした', analysis };
       }
 

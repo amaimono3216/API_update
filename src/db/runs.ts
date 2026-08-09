@@ -6,6 +6,8 @@ export type RunStatus =
   | 'fixing'
   | 'fixed'
   | 'pr_opened'
+  | 'pr_merged'
+  | 'pr_closed'
   | 'skipped'
   | 'failed';
 
@@ -58,6 +60,16 @@ export async function updateRun(
       patch.error ?? null,
     ],
   );
+}
+
+/** Webhook で PR の結末を受け取った際に、対応する実行記録を引くために使う。 */
+export async function findRunByPrUrl(prUrl: string): Promise<RunRow | null> {
+  const { rows } = await pool.query<RunRow>(
+    `SELECT id, diff_id, repository, status, pr_url, error, created_at, updated_at
+       FROM api_update_runs WHERE pr_url = $1 ORDER BY created_at DESC LIMIT 1`,
+    [prUrl],
+  );
+  return rows[0] ?? null;
 }
 
 export async function listRuns(repository?: string, limit = 20): Promise<RunRow[]> {

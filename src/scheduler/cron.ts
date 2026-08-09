@@ -3,6 +3,8 @@ import cron from 'node-cron';
 import { env } from '../config/env.js';
 import { detect } from '../detector/detect.js';
 import { PROVIDERS, type ProviderId } from '../detector/providers.js';
+import { notifyDetection } from '../notify/dispatch.js';
+import { createNotifier } from '../notify/notifier.js';
 
 interface Logger {
   info: (obj: object, msg: string) => void;
@@ -12,15 +14,17 @@ interface Logger {
 
 /** 全プロバイダを順に検知する（同時実行によるメモリ圧を避けて直列）。 */
 export async function detectAll(log: Logger): Promise<void> {
+  const notifier = createNotifier(log);
+
   for (const id of Object.keys(PROVIDERS) as ProviderId[]) {
     try {
       const outcome = await detect(id, log);
       if (outcome.status === 'breaking') {
-        // TODO(②): 影響範囲特定モジュールへ diffId を引き渡す
         log.warn(
           { provider: id, diffId: outcome.diffId, breaking: outcome.breakingCount },
           '破壊的変更を検知しました',
         );
+        await notifyDetection(outcome, notifier);
       }
     } catch (error) {
       log.error({ provider: id, err: String(error) }, '検知処理に失敗しました');
