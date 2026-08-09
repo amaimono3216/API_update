@@ -16,7 +16,9 @@
     "seed:baseline": "tsx src/scripts/seed-baseline.ts",
     "analyze": "tsx src/scripts/analyze-local.ts",
     "fix": "tsx src/scripts/fix-local.ts",
-    "pipeline": "tsx src/scripts/run-pipeline.ts"
+    "pipeline": "tsx src/scripts/run-pipeline.ts",
+    "verify:github": "tsx src/scripts/verify-github-auth.ts",
+    "verify:llm": "tsx src/scripts/verify-llm-offline.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

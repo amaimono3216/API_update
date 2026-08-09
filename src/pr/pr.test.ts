@@ -216,6 +216,26 @@ describe('buildPullRequestBody', () => {
     assert.match(body, /`src\/report\.js:7`/);
   });
 
+  it('影響箇所は重複を除いた実数で示す（呼び出し箇所数との比率にしない）', () => {
+    // 同じ行が複数の変更に該当する場合、単純な件数だと呼び出し箇所数を上回り誤解を招く
+    const body = buildPullRequestBody(
+      input({
+        analysis: analysis({
+          callSites: 1,
+          scannedFiles: 3,
+          affected: [
+            judgement({ line: 14, changeLocation: 'POST /v1/terminal/refunds requestBody.amount' }),
+            judgement({ line: 14, changeLocation: 'POST /v1/terminal/refunds requestBody.charge' }),
+            judgement({ line: 4, changeLocation: 'POST /v1/terminal/refunds requestBody.amount' }),
+          ],
+        }),
+      }),
+    );
+    assert.match(body, /\*\*検出した API 呼び出し\*\*: 1 箇所（走査ファイル 3 件）/);
+    assert.match(body, /\*\*修正が必要と判定した箇所\*\*: 2 箇所/);
+    assert.doesNotMatch(body, /1 箇所の API 呼び出しのうち、3/);
+  });
+
   it('LLM 判定が未実行の場合は警告する', () => {
     const body = buildPullRequestBody(input({ analysis: analysis({ judged: false }) }));
     assert.match(body, /LLM による影響判定は実行されていません/);

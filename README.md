@@ -18,7 +18,7 @@ Stripe / OpenAI の公式 API アップデート（OpenAPI 仕様・Changelog）
 ## セットアップ
 
 ```bash
-cp .env.example .env      # 必要なトークン類を記入
+# .env を用意する（下記「環境変数」を参照）
 docker compose up -d --build
 curl http://localhost:3000/health
 ```
@@ -407,5 +407,48 @@ docker build --target prod -t api-update:prod .
 
 ## 環境変数
 
-`.env.example` を参照。環境構築時点で必須なのは `DATABASE_URL` / `REDIS_URL` のみで、
-`GITHUB_APP_*`・`ANTHROPIC_API_KEY` は各モジュール実装時に必須化する。
+プロジェクト直下の `.env` に記述する（`.gitignore` 済み）。
+
+### 必須
+
+| 変数 | 既定値 | 説明 |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgres://api_update:api_update@db:5432/api_update` | PostgreSQL 接続先 |
+| `REDIS_URL` | `redis://redis:6379` | Redis 接続先 |
+
+### 任意（未設定でも動作するが、該当機能が制限される）
+
+| 変数 | 未設定時の挙動 |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | ② の影響判定をスキップし全件 `uncertain`。③ の自動修正は実行不可 |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | ④ は PR 内容の生成のみ。GitHub への送信をスキップ |
+| `GITHUB_WEBHOOK_SECRET` | `POST /webhooks/github` が 503 を返す |
+| `SLACK_WEBHOOK_URL` | 通知をログ出力にフォールバック |
+
+### 動作設定
+
+| 変数 | 既定値 | 説明 |
+| --- | --- | --- |
+| `NODE_ENV` | `development` | `development` ではログを整形出力する |
+| `PORT` | `3000` | HTTP ポート |
+| `LOG_LEVEL` | `info` | `fatal` / `error` / `warn` / `info` / `debug` / `trace` |
+| `DETECT_ENABLED` | `true` | ① の定期実行の有効化 |
+| `DETECT_CRON` | `0 3 * * *` | 検知スケジュール |
+| `DETECT_TIMEZONE` | `Asia/Tokyo` | スケジュールのタイムゾーン |
+| `STRIPE_OPENAPI_URL` | Stripe 公式 spec3.json | 監視対象スペックの上書き |
+| `OPENAI_OPENAPI_URL` | OpenAI 公式 openapi.yaml | 監視対象スペックの上書き |
+| `DB_PORT` / `REDIS_PORT` | `5432` / `6379` | ホスト側に公開するポート（衝突時のみ変更） |
+
+### 最小構成の例
+
+```bash
+cat > .env <<'EOF'
+DATABASE_URL=postgres://api_update:api_update@db:5432/api_update
+REDIS_URL=redis://redis:6379
+NODE_ENV=development
+LOG_LEVEL=debug
+EOF
+```
+
+`GITHUB_APP_PRIVATE_KEY` は複数行の PEM のため、改行を `\n` に置き換えて 1 行で記述するか、
+ダブルクォートで囲んで実際の改行を含める。

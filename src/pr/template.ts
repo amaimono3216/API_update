@@ -134,11 +134,16 @@ function buildReliabilitySection(input: TemplateInput): string {
   const { analysis, fix } = input;
   const uncertain = analysis.judgements.filter((j) => j.verdict === 'uncertain');
 
+  // 影響ありの件数は「変更 × 箇所」の組み合わせ数になるため、
+  // 呼び出し箇所数との比率にすると分母より大きくなり誤解を招く。別々の事実として示す。
+  const affectedLocations = new Set(analysis.affected.map((j) => `${j.file}:${j.line}`)).size;
+
   const lines = [
     '## 4. この修正の信頼性について',
     '',
     `- **修正の試行回数**: ${fix.attempts.length} 回${fix.attempts.length > 1 ? '（テスト失敗を受けて再修正しています）' : ''}`,
-    `- **影響判定**: 検出した ${analysis.callSites} 箇所の API 呼び出しのうち、${analysis.affected.length} 箇所を「影響あり」と判定`,
+    `- **検出した API 呼び出し**: ${analysis.callSites} 箇所（走査ファイル ${analysis.scannedFiles} 件）`,
+    `- **修正が必要と判定した箇所**: ${affectedLocations} 箇所`,
   ];
 
   if (!analysis.judged) {
