@@ -5,8 +5,8 @@ import { OperationIndex } from './sdk-map.js';
 import { correlate } from './correlate.js';
 import { isJudgeAvailable, judgeImpact } from './llm-judge.js';
 import type { RepositorySource } from './repository.js';
-import { scanSource } from './scan-typescript.js';
-import type { AnalysisResult, CallSite } from './types.js';
+import { scanFiles } from './scan.js';
+import type { AnalysisResult } from './types.js';
 
 interface Logger {
   info: (obj: object, msg: string) => void;
@@ -37,15 +37,7 @@ export async function analyze(
     const index = new OperationIndex(spec);
     const files = await repository.listSourceFiles();
 
-    const callSites: CallSite[] = [];
-    for (const file of files) {
-      try {
-        callSites.push(...scanSource(file.path, file.content, index));
-      } catch (error) {
-        // 構文エラーのあるファイルで全体を止めない
-        log.warn({ file: file.path, err: String(error) }, 'ファイルの解析に失敗しました');
-      }
-    }
+    const callSites = await scanFiles(files, index, log);
 
     const breaking = diff.changes.filter((c) => c.severity === 'breaking');
     const candidates = correlate(breaking, callSites);

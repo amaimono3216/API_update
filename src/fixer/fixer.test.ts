@@ -8,7 +8,7 @@ import type { ImpactJudgement } from '../analyzer/types.js';
 import type { BreakingChange } from '../detector/types.js';
 import { applyEdits } from './edit.js';
 import { buildBranchName, runFixLoop, type EditGenerator } from './fix-loop.js';
-import { detectInstallCommand, detectTestCommand, runCommand } from './test-runner.js';
+import { detectInstallCommands, detectTestCommand, runCommand } from './test-runner.js';
 import type { CodeEdit } from './types.js';
 import { Workspace } from './workspace.js';
 
@@ -147,9 +147,31 @@ describe('detectTestCommand', () => {
 
   it('ロックファイルがある場合のみインストールコマンドを返す', async () => {
     const dir = await makeTempDir();
-    assert.equal(await detectInstallCommand(dir), undefined);
+    assert.deepEqual(await detectInstallCommands(dir), []);
     await writeFile(path.join(dir, 'package-lock.json'), '{}');
-    assert.deepEqual(await detectInstallCommand(dir), { command: 'npm', args: ['ci'] });
+    assert.deepEqual(await detectInstallCommands(dir), [{ command: 'npm', args: ['ci'] }]);
+  });
+
+  it('Python は仮想環境を作ってから依存を入れる', async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, 'requirements.txt'), 'stripe==12.0.0\n');
+    const commands = await detectInstallCommands(dir);
+
+    assert.deepEqual(commands[0], { command: 'python3', args: ['-m', 'venv', '.venv'] });
+    // システム Python を汚さないよう、仮想環境側の pip を使う
+    assert.ok(commands[1]?.command.includes('.venv'), commands[1]?.command);
+    assert.ok(commands.some((c) => c.args.includes('requirements.txt')));
+  });
+
+  it('仮想環境があればそちらの pytest を使う', async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, 'requirements.txt'), '');
+    assert.deepEqual(await detectTestCommand(dir), { command: 'pytest', args: ['-q'] });
+
+    await mkdir(path.join(dir, '.venv', 'bin'), { recursive: true });
+    await writeFile(path.join(dir, '.venv', 'bin', 'pytest'), '');
+    const command = await detectTestCommand(dir);
+    assert.ok(command?.command.includes('.venv'), command?.command);
   });
 });
 

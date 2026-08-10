@@ -57,8 +57,12 @@ export class OperationIndex {
 /** 呼び出しチェーン（クライアント変数名を除く）から操作を解決する。 */
 export type PathResolver = (chain: string[], index: OperationIndex) => OperationRef | undefined;
 
+export type SourceLanguage = 'typescript' | 'python';
+
 export interface SdkConvention {
   provider: string;
+  /** 同じプロバイダでも言語ごとに呼び出しの形が違うため、言語を持たせる */
+  language: SourceLanguage;
   /** import 元のモジュール名 */
   modules: string[];
   /**
@@ -156,7 +160,7 @@ function interleavedBases(prefix: string, segments: string[]): string[] {
 
 /**
  * `client.chat.postMessage()` → `/chat.postMessage` のように、
- * 呼び出しチェーンをドット結合したものがパスになる SDK 向け。
+ * 呼び出しチェーンをドット結合したものがパスになる SDK 向け（Slack の Node SDK）。
  */
 export function dottedMethodResolver(options: { pathPrefix?: string } = {}): PathResolver {
   const prefix = options.pathPrefix ?? '';
@@ -165,6 +169,32 @@ export function dottedMethodResolver(options: { pathPrefix?: string } = {}): Pat
     if (chain.length < 2) return undefined;
     // Slack Web API は POST が基本だが、一部 GET のみの操作がある
     return index.lookupAny(`${prefix}/${chain.join('.')}`, ['post', 'get']);
+  };
+}
+
+/**
+ * `client.chat_postMessage()` → `/chat.postMessage` のように、
+ * メソッド名のアンダースコアがパスの区切りになる SDK 向け（Slack の Python SDK）。
+ */
+export function underscoreMethodResolver(options: { pathPrefix?: string } = {}): PathResolver {
+  const prefix = options.pathPrefix ?? '';
+
+  return (chain, index) => {
+    // Python 版はメソッド 1 つで完結する（`client.chat_postMessage`）
+    const method = chain[chain.length - 1];
+    if (!method || !method.includes('_')) return undefined;
+    return index.lookupAny(`${prefix}/${method.replace(/_/g, '.')}`, ['post', 'get']);
+  };
+}
+
+/** 複数の解決方法を順に試す。SDK のバージョン差を吸収するために使う。 */
+export function firstMatchResolver(...resolvers: PathResolver[]): PathResolver {
+  return (chain, index) => {
+    for (const resolve of resolvers) {
+      const found = resolve(chain, index);
+      if (found) return found;
+    }
+    return undefined;
   };
 }
 
@@ -213,36 +243,83 @@ export function twilioResolver(options: { pathPrefix: string }): PathResolver {
 
 // ---------------------------------------------------------------------------
 
+const openaiResolver = restNamespaceResolver({ pathPrefix: '', ignoredSegments: ['beta'] });
+const twilioApiResolver = twilioResolver({ pathPrefix: '/2010-04-01' });
+
 export const SDK_CONVENTIONS: SdkConvention[] = [
+  // --- TypeScript / JavaScript ---
   {
     provider: 'stripe',
+    language: 'typescript',
     modules: ['stripe'],
     clientNames: ['stripe'],
     resolve: restNamespaceResolver({ pathPrefix: '/v1' }),
   },
   {
     provider: 'openai',
+    language: 'typescript',
     modules: ['openai'],
     clientNames: ['openai'],
     // OpenAI のスペックは servers に /v1 を含むため、パス側に接頭辞は無い
-    resolve: restNamespaceResolver({ pathPrefix: '', ignoredSegments: ['beta'] }),
+    resolve: openaiResolver,
   },
   {
     provider: 'slack',
+    language: 'typescript',
     modules: ['@slack/web-api'],
     clientNames: ['slack', 'web', 'webclient'],
     resolve: dottedMethodResolver(),
   },
   {
     provider: 'twilio',
+    language: 'typescript',
     modules: ['twilio'],
     clientNames: ['twilio'],
-    resolve: twilioResolver({ pathPrefix: '/2010-04-01' }),
+    resolve: twilioApiResolver,
+  },
+
+  // --- Python ---
+  {
+    provider: 'stripe',
+    language: 'python',
+    modules: ['stripe'],
+    clientNames: ['stripe', 'stripeclient'],
+    // StripeClient は `client.v1.customers.create` と、チェーンに v1 を含む。
+    // v1 を含まない旧バージョンの書き方にも対応するため両方試す。
+    resolve: firstMatchResolver(
+      restNamespaceResolver({ pathPrefix: '' }),
+      restNamespaceResolver({ pathPrefix: '/v1' }),
+    ),
+  },
+  {
+    provider: 'openai',
+    language: 'python',
+    modules: ['openai'],
+    clientNames: ['openai'],
+    resolve: openaiResolver,
+  },
+  {
+    provider: 'slack',
+    language: 'python',
+    modules: ['slack_sdk', 'slack_sdk.web'],
+    clientNames: ['slack', 'webclient'],
+    // Python 版は `client.chat_postMessage(...)` とアンダースコア記法
+    resolve: underscoreMethodResolver(),
+  },
+  {
+    provider: 'twilio',
+    language: 'python',
+    modules: ['twilio', 'twilio.rest'],
+    clientNames: ['twilio', 'client'],
+    resolve: twilioApiResolver,
   },
 ];
 
-export const findConvention = (moduleName: string): SdkConvention | undefined =>
-  SDK_CONVENTIONS.find((c) => c.modules.includes(moduleName));
+export const findConvention = (
+  moduleName: string,
+  language: SourceLanguage = 'typescript',
+): SdkConvention | undefined =>
+  SDK_CONVENTIONS.find((c) => c.language === language && c.modules.includes(moduleName));
 
 /** 後方互換のための薄いラッパ。呼び出し側は convention.resolve を直接使ってもよい。 */
 export const resolveOperation = (

@@ -115,12 +115,21 @@ curl -X POST http://localhost:3000/detect/stripe
 
 ### コード解析
 
-[src/analyzer/scan-typescript.ts](src/analyzer/scan-typescript.ts) が TypeScript / JavaScript を
-AST で走査し、Stripe・OpenAI SDK の呼び出し箇所と**渡しているパラメータ名**を抽出する。
+[src/analyzer/scan.ts](src/analyzer/scan.ts) が拡張子で言語を振り分ける。
 
-型チェッカは使わず単一ファイルのパースのみで完結させている。tsconfig や node_modules の解決が
-不要になり、任意のリポジトリをそのまま走査できるため。精度は「解決したパスが実スペックに
-存在するか」で担保している。
+| 言語 | 解析方法 |
+| --- | --- |
+| TypeScript / JavaScript | [scan-typescript.ts](src/analyzer/scan-typescript.ts) — TypeScript Compiler API（同一プロセス内） |
+| Python | [scan-python.ts](src/analyzer/scan-python.ts) — Python の `ast` モジュール（外部プロセス） |
+
+TypeScript 側は型チェッカを使わず単一ファイルのパースのみで完結させている。tsconfig や
+node_modules の解決が不要になり、任意のリポジトリをそのまま走査できるため。
+
+Python は [extract_python_calls.py](src/analyzer/extract_python_calls.py) に構文解析を任せる。
+文法を推測で再実装せずに済むため。**SDK の知識は持たせず構文上の事実だけを返し**、
+対応づけは TypeScript 側の `sdk-map` に集約している。全ファイルを 1 回のプロセス起動で処理する。
+
+いずれも精度は「解決したパスが実スペックに存在するか」で担保している。
 
 検出できるクライアント定義:
 
@@ -131,18 +140,36 @@ this.stripe = new Stripe(key);               // クラスのプロパティ
 import { stripe } from './lib/stripe';       // 別ファイル生成（名前から推定）
 ```
 
-呼び出しチェーンは [src/analyzer/sdk-map.ts](src/analyzer/sdk-map.ts) が OpenAPI 操作に対応づける。
-両 SDK とも名前空間がリソースパスと 1:1 に対応するため規則ベースで解決し、
-実スペックのパスと突き合わせて検証する。
+```python
+client = StripeClient(key)                   # from stripe import StripeClient
+client = Client(sid, token)                  # from twilio.rest import Client
+stripe.checkout.sessions.create(...)         # import stripe（モジュール直接）
+```
 
-| SDK 呼び出し | 解決される操作 |
-| --- | --- |
-| `stripe.checkout.sessions.create` | `POST /v1/checkout/sessions` |
-| `stripe.charges.retrieve` | `GET /v1/charges/{charge}` |
-| `stripe.paymentIntents.create` | `POST /v1/payment_intents` |
-| `stripe.charges.capture` | `POST /v1/charges/{charge}/capture` |
-| `openai.chat.completions.create` | `POST /chat/completions` |
-| `openai.beta.threads.messages.create` | `POST /threads/{thread_id}/messages` |
+### SDK 呼び出し → OpenAPI 操作の対応づけ
+
+[src/analyzer/sdk-map.ts](src/analyzer/sdk-map.ts) がプロバイダ**かつ言語ごと**に解決関数を持つ。
+同じプロバイダでも言語で呼び出しの形が変わるため。
+
+| 言語 | SDK 呼び出し | 解決される操作 |
+| --- | --- | --- |
+| TS | `stripe.checkout.sessions.create` | `POST /v1/checkout/sessions` |
+| TS | `stripe.charges.capture` | `POST /v1/charges/{charge}/capture` |
+| TS | `openai.beta.threads.messages.create` | `POST /threads/{thread_id}/messages` |
+| TS | `client.chat.postMessage` | `POST /chat.postMessage` |
+| TS | `client.messages.create` (Twilio) | `POST /2010-04-01/Accounts/{AccountSid}/Messages.json` |
+| Py | `client.v1.customers.create` | `POST /v1/customers` |
+| Py | `client.chat_postMessage` | `POST /chat.postMessage`（アンダースコア記法） |
+| Py | `client.messages.create` (Twilio) | `POST /2010-04-01/Accounts/{AccountSid}/Messages.json` |
+
+### 命名規則の吸収
+
+仕様側とコード側で命名規則が異なるため、突合時に正規化する。
+
+| 仕様 | コード | 例 |
+| --- | --- | --- |
+| `To` (Twilio は PascalCase) | `to` / `statusCallback` / `status_callback` | 大小文字と区切り文字を落として比較 |
+| `From` | `from_`（Python の予約語回避） | 同上 |
 
 ### 突合と LLM 判定
 
@@ -203,9 +230,16 @@ LLM の編集は文字列の完全一致に依存するため、`core.autocrlf=f
 | 検出条件 | コマンド |
 | --- | --- |
 | `package.json` に `scripts.test` | `npm test` |
-| `pyproject.toml` / `pytest.ini` 等 | `pytest -q` |
+| `pyproject.toml` / `pytest.ini` / `requirements.txt` 等 | `pytest -q`（仮想環境があれば `.venv/bin/pytest`） |
 | `go.mod` | `go test ./...` |
 | `Cargo.toml` | `cargo test` |
+
+依存関係は実行前にインストールする。Python は**作業コピー内に仮想環境を作って**そこへ入れる。
+コンテナのシステム Python を汚さず、実行のたびに独立した状態から始められる。
+
+インストールやテストで生成される成果物（`node_modules` / `__pycache__` / `.venv` など）は
+作業コピーの `.git/info/exclude` で除外し、PR に混入しないようにしている。
+対象リポジトリの `.gitignore` は書き換えない。
 
 テストが失敗した場合、出力の末尾を LLM にフィードバックして再修正する（**最大 3 回**）。
 ファイル内容は毎回作業コピーから読み直すため、LLM は常に前回の編集が反映された状態を見て判断する。
@@ -417,7 +451,10 @@ docker build --target prod -t api-update:prod .
     │   └── detect.ts       #   一連の処理のオーケストレーション
     ├── analyzer/           # ② 影響範囲特定モジュール
     │   ├── repository.ts   #   解析対象リポジトリのソース取得層
-    │   ├── scan-typescript.ts # AST による SDK 呼び出しの抽出
+    │   ├── scan.ts         #   言語ごとの走査の振り分け
+    │   ├── scan-typescript.ts # TypeScript / JavaScript の AST 走査
+    │   ├── scan-python.ts  #   Python の AST 走査（外部プロセス）
+    │   ├── extract_python_calls.py # Python 側の抽出器
     │   ├── sdk-map.ts      #   呼び出しチェーン → OpenAPI 操作の対応づけ
     │   ├── correlate.ts    #   破壊的変更と呼び出し箇所の突合
     │   ├── llm-judge.ts    #   Claude による影響有無の判定

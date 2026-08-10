@@ -3,7 +3,7 @@ import { findDiffById } from '../db/diffs.js';
 import { updateRun } from '../db/runs.js';
 import { isFixAgentAvailable } from './fix-agent.js';
 import { buildBranchName, runFixLoop, type EditGenerator } from './fix-loop.js';
-import { detectInstallCommand, detectTestCommand, runCommand } from './test-runner.js';
+import { detectInstallCommands, detectTestCommand, runCommand } from './test-runner.js';
 import type { FixResult } from './types.js';
 import { Workspace } from './workspace.js';
 
@@ -106,12 +106,19 @@ const toFixSummary = (result: FixResult) => ({
 });
 
 async function installDependencies(dir: string, log: Logger): Promise<void> {
-  const install = await detectInstallCommand(dir);
-  if (!install) return;
+  const commands = await detectInstallCommands(dir);
+  if (commands.length === 0) return;
 
-  const result = await runCommand(dir, install);
-  // 依存解決に失敗してもテスト実行まで進め、実際の失敗内容を LLM に見せる
-  if (!result.passed) {
-    log.warn({ command: result.command, exitCode: result.exitCode }, '依存関係のインストールに失敗しました');
+  for (const command of commands) {
+    const result = await runCommand(dir, command);
+    // 依存解決に失敗してもテスト実行まで進め、実際の失敗内容を LLM に見せる
+    if (!result.passed) {
+      log.warn(
+        { command: result.command, exitCode: result.exitCode, output: result.output.slice(-300) },
+        '依存関係のインストールに失敗しました',
+      );
+      return;
+    }
   }
+  log.info({ steps: commands.length }, '依存関係をインストールしました');
 }
