@@ -52,10 +52,24 @@ export async function detectTestCommand(dir: string): Promise<TestCommand | unde
       : { command: 'pytest', args: ['-q'] };
   }
 
-  if (await exists(path.join(dir, 'go.mod'))) return { command: 'go', args: ['test', './...'] };
-  if (await exists(path.join(dir, 'Cargo.toml'))) return { command: 'cargo', args: ['test'] };
+  // 実行環境に無いコマンドを返すと、修正ループが 3 回とも「テスト失敗」で無駄に回る
+  if ((await exists(path.join(dir, 'go.mod'))) && (await commandExists('go'))) {
+    return { command: 'go', args: ['test', './...'] };
+  }
+  if ((await exists(path.join(dir, 'Cargo.toml'))) && (await commandExists('cargo'))) {
+    return { command: 'cargo', args: ['test'] };
+  }
 
   return undefined;
+}
+
+/** 実行環境にそのコマンドがあるか。無ければテスト検証をスキップする判断に使う。 */
+export function commandExists(command: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = spawn(process.platform === 'win32' ? 'where' : 'which', [command], { shell: false });
+    probe.on('error', () => resolve(false));
+    probe.on('close', (code) => resolve(code === 0));
+  });
 }
 
 /**

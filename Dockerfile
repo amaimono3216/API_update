@@ -1,5 +1,14 @@
 # syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------------------
+# go-extract: Go ソース解析用のバイナリをビルドする
+#   Go ツールチェーンはビルド時のみ必要。実行イメージには数 MB のバイナリだけを置く。
+# ---------------------------------------------------------------------------
+FROM golang:1.24-bookworm AS go-extract
+WORKDIR /build
+COPY tools/go-extract/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/go-extract .
+
+# ---------------------------------------------------------------------------
 # base: 全ステージ共通のランタイム
 #   - ターゲットリポジトリの clone / branch 操作を行うため git は必須
 #   - AST パーサ等のネイティブモジュールを見据えて alpine ではなく slim を採用
@@ -15,6 +24,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git ca-certificates tini python3 python3-venv python3-pip python3-pytest \
     && rm -rf /var/lib/apt/lists/*
+# Go ソース解析用のバイナリ。ツールチェーン全体（約 500MB）は持ち込まない
+COPY --from=go-extract /out/go-extract /usr/local/bin/go-extract
 WORKDIR /app
 ENTRYPOINT ["/usr/bin/tini", "--"]
 

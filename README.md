@@ -121,13 +121,19 @@ curl -X POST http://localhost:3000/detect/stripe
 | --- | --- |
 | TypeScript / JavaScript | [scan-typescript.ts](src/analyzer/scan-typescript.ts) — TypeScript Compiler API（同一プロセス内） |
 | Python | [scan-python.ts](src/analyzer/scan-python.ts) — Python の `ast` モジュール（外部プロセス） |
+| Go | [scan-go.ts](src/analyzer/scan-go.ts) — Go の `go/ast`（ビルド済みバイナリ） |
 
 TypeScript 側は型チェッカを使わず単一ファイルのパースのみで完結させている。tsconfig や
 node_modules の解決が不要になり、任意のリポジトリをそのまま走査できるため。
 
-Python は [extract_python_calls.py](src/analyzer/extract_python_calls.py) に構文解析を任せる。
-文法を推測で再実装せずに済むため。**SDK の知識は持たせず構文上の事実だけを返し**、
-対応づけは TypeScript 側の `sdk-map` に集約している。全ファイルを 1 回のプロセス起動で処理する。
+Python と Go はその言語自身のパーサに構文解析を任せる
+（[extract_python_calls.py](src/analyzer/extract_python_calls.py) /
+[tools/go-extract](tools/go-extract/main.go)）。文法を推測で再実装せずに済むため。
+どちらも **SDK の知識は持たせず構文上の事実だけを返し**、対応づけは `sdk-map` に集約している。
+全ファイルを 1 回のプロセス起動で処理する。
+
+Go の解析器はビルド時にのみ Go ツールチェーンを使い、実行イメージには
+**約 2.3MB のバイナリだけ**を置く（ツールチェーン全体なら約 500MB）。
 
 いずれも精度は「解決したパスが実スペックに存在するか」で担保している。
 
@@ -146,6 +152,12 @@ client = Client(sid, token)                  # from twilio.rest import Client
 stripe.checkout.sessions.create(...)         # import stripe（モジュール直接）
 ```
 
+```go
+sc := stripe.NewClient(apiKey)               // github.com/stripe/stripe-go
+client := openai.NewClient()                 // github.com/openai/openai-go
+params := &stripe.CustomerCreateParams{...}  // 変数経由で渡す形にも対応
+```
+
 ### SDK 呼び出し → OpenAPI 操作の対応づけ
 
 [src/analyzer/sdk-map.ts](src/analyzer/sdk-map.ts) がプロバイダ**かつ言語ごと**に解決関数を持つ。
@@ -161,6 +173,16 @@ stripe.checkout.sessions.create(...)         # import stripe（モジュール�
 | Py | `client.v1.customers.create` | `POST /v1/customers` |
 | Py | `client.chat_postMessage` | `POST /chat.postMessage`（アンダースコア記法） |
 | Py | `client.messages.create` (Twilio) | `POST /2010-04-01/Accounts/{AccountSid}/Messages.json` |
+| Go | `sc.V1Customers.Create` | `POST /v1/customers` |
+| Go | `sc.V1PaymentIntents.Create` | `POST /v1/payment_intents` |
+| Go | `client.Chat.Completions.New` | `POST /chat/completions` |
+
+Go はパスの区切りが 1 つの識別子に連結されており、`V1PaymentIntents` は
+`/v1/payment/intents` とも `/v1/payment_intents` とも読める。語の区切り方を総当たりし、
+**実スペックに存在するものだけを採用**することで判別している。
+
+> **Go の対象外**: Twilio Go（`client.Api.CreateMessage` + セッター）と
+> Slack Go（`api.PostMessage`）は呼び出し名が仕様のパスから離れており、規則で対応づけられない。
 
 ### 命名規則の吸収
 
@@ -454,6 +476,7 @@ docker build --target prod -t api-update:prod .
     │   ├── scan.ts         #   言語ごとの走査の振り分け
     │   ├── scan-typescript.ts # TypeScript / JavaScript の AST 走査
     │   ├── scan-python.ts  #   Python の AST 走査（外部プロセス）
+    │   ├── scan-go.ts      #   Go の AST 走査（外部プロセス）
     │   ├── extract_python_calls.py # Python 側の抽出器
     │   ├── sdk-map.ts      #   呼び出しチェーン → OpenAPI 操作の対応づけ
     │   ├── correlate.ts    #   破壊的変更と呼び出し箇所の突合
