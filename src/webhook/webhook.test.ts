@@ -165,7 +165,7 @@ describe('handleGitHubEvent', () => {
       notifications,
       updates,
       runs: {
-        findByPrUrl: async () => run,
+        findAllByPrUrl: async () => (run ? [run] : []),
         setStatus: async (id, status) => {
           updates.push({ id, status });
         },
@@ -209,6 +209,46 @@ describe('handleGitHubEvent', () => {
     assert.deepEqual(ctx.updates, [{ id: '7', status: 'pr_merged' }]);
     assert.equal(ctx.notifications.length, 1);
     assert.equal(ctx.notifications[0]?.type, 'pr_merged');
+  });
+
+  it('同じ PR に紐づく複数の実行記録をすべて更新する', async () => {
+    // 同じ差分を再実行すると 1 つの PR に複数の実行記録が紐づく
+    const notifications: NotificationEvent[] = [];
+    const updates: { id: string; status: string }[] = [];
+    const ctx: HandlerContext = {
+      log,
+      notifier: {
+        notify: async (event) => {
+          notifications.push(event);
+        },
+      },
+      runs: {
+        findAllByPrUrl: async () => [
+          { id: '17', repository: 'acme/payments' },
+          { id: '16', repository: 'acme/payments' },
+          { id: '12', repository: 'acme/payments' },
+        ],
+        setStatus: async (id, status) => {
+          updates.push({ id, status });
+        },
+      },
+    };
+
+    const result = await handleGitHubEvent(
+      'pull_request',
+      { action: 'closed', pull_request: { html_url: 'https://github.com/acme/payments/pull/2', merged: true } },
+      ctx,
+    );
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(
+      updates.map((u) => u.id),
+      ['17', '16', '12'],
+    );
+    assert.ok(updates.every((u) => u.status === 'pr_merged'));
+    // 通知は 1 回だけ
+    assert.equal(notifications.length, 1);
+    assert.match(result.detail, /3 件/);
   });
 
   it('マージされずに閉じられた PR は通知しない', async () => {

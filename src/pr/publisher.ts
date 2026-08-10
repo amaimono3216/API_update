@@ -7,6 +7,24 @@ import { Octokit } from '@octokit/rest';
 const exec = promisify(execFile);
 const GIT_TIMEOUT_MS = 120_000;
 
+/** このシステムが自動生成するブランチの接頭辞。 */
+export const MANAGED_BRANCH_PREFIX = 'api-update/';
+
+/**
+ * force push してよいブランチかを判定する。
+ *
+ * 同じ差分を再実行すると、作業コピーはベースから作り直されるためリモートに残った
+ * 前回のブランチとは履歴が繋がらず、通常の push は non-fast-forward で拒否される。
+ * 自動生成ブランチは「やり直し＝上書き」で問題ないため force push を許すが、
+ * **それ以外のブランチには絶対に使わない**。
+ */
+export function shouldForcePush(branch: string): boolean {
+  if (!branch.startsWith(MANAGED_BRANCH_PREFIX)) return false;
+  // パス操作で接頭辞の外に出られないことを確かめる
+  if (branch.includes('..')) return false;
+  return branch.length > MANAGED_BRANCH_PREFIX.length;
+}
+
 export interface PullRequestPlan {
   /** `owner/repo` 形式 */
   repository: string;
@@ -79,6 +97,26 @@ export class GitHubPublisher implements PullRequestPublisher {
 
     await this.pushBranch(plan, owner, repo, token);
 
+    // 同じ差分の再実行では既に PR が開いている。二重に作らず内容を更新する
+    const { data: existing } = await octokit.rest.pulls.list({
+      owner,
+      repo,
+      head: `${owner}:${plan.branch}`,
+      state: 'open',
+    });
+
+    const open = existing[0];
+    if (open) {
+      const { data: updated } = await octokit.rest.pulls.update({
+        owner,
+        repo,
+        pull_number: open.number,
+        title: plan.title,
+        body: plan.body,
+      });
+      return { published: true, url: updated.html_url };
+    }
+
     const { data: pullRequest } = await octokit.rest.pulls.create({
       owner,
       repo,
@@ -94,9 +132,11 @@ export class GitHubPublisher implements PullRequestPublisher {
   /** トークンは引数として渡すだけにして、作業ディレクトリの git 設定には残さない。 */
   private async pushBranch(plan: PullRequestPlan, owner: string, repo: string, token: string): Promise<void> {
     const remote = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
-    await exec('git', ['-C', plan.workdir, 'push', '--quiet', remote, `HEAD:refs/heads/${plan.branch}`], {
-      timeout: GIT_TIMEOUT_MS,
-    });
+    const args = ['-C', plan.workdir, 'push', '--quiet'];
+    if (shouldForcePush(plan.branch)) args.push('--force');
+    args.push(remote, `HEAD:refs/heads/${plan.branch}`);
+
+    await exec('git', args, { timeout: GIT_TIMEOUT_MS });
   }
 }
 

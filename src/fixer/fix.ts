@@ -42,7 +42,7 @@ export async function fix(
   const diff = await findDiffById(analysis.diffId);
   if (!diff) throw new Error(`差分が見つかりません: ${analysis.diffId}`);
 
-  const branch = buildBranchName(diff.provider, diff.to_version);
+  const branch = buildBranchName(diff.provider, diff.to_version, diff.id);
   const workspace = await Workspace.create(repositoryPath, branch);
   log.info({ branch, workdir: workspace.dir }, '作業ブランチを作成しました');
 

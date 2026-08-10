@@ -45,6 +45,26 @@ export async function publishPullRequest(
   if (!diff) throw new Error(`差分が見つかりません: ${analysis.diffId}`);
   if (!isProviderId(diff.provider)) throw new Error(`未対応のプロバイダです: ${diff.provider}`);
 
+  // 適用できた編集が 1 件も無ければ提案する内容が無い。空の PR はノイズにしかならない
+  if (fix.edits.length === 0) {
+    log.warn({ branch: fix.branch }, '適用できた修正が無いため PR は作成しません');
+    return {
+      plan: {
+        repository: analysis.repository,
+        branch: fix.branch,
+        baseBranch: options.baseBranch ?? 'main',
+        title: buildTitle(PROVIDERS[diff.provider]),
+        body: '',
+        workdir: fix.workdir,
+      },
+      result: {
+        published: false,
+        url: null,
+        reason: '適用できた修正が無いため PR を作成していません',
+      },
+    };
+  }
+
   // 表に載せるのは、実際に修正の根拠となった変更のみに絞る
   const affectedLocations = new Set(analysis.affected.map((j) => j.changeLocation));
   const relevantChanges = diff.changes.filter((change) => affectedLocations.has(change.location));

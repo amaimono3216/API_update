@@ -149,8 +149,21 @@ function buildReliabilitySection(input: TemplateInput): string {
   if (!analysis.judged) {
     lines.push('- ⚠️ **LLM による影響判定は実行されていません**（静的解析の結果のみに基づいています）');
   }
+
+  // 「未完了」の理由はテスト失敗とは限らない。適用できなかった編集がある場合と区別する
   if (!fix.succeeded) {
-    lines.push('- ⚠️ **テストが通っていません**。マージ前に手動での確認・修正が必要です');
+    const testFailed = fix.test !== null && !fix.test.passed;
+    const unapplied = fix.attempts.reduce((sum, attempt) => sum + attempt.applyFailures, 0);
+
+    if (testFailed) {
+      lines.push('- ⚠️ **テストが通っていません**。マージ前に手動での確認・修正が必要です');
+    } else if (unapplied > 0) {
+      lines.push(
+        `- ⚠️ **適用できなかった修正が ${unapplied} 件あります**。対象箇所を特定できなかったため、手動での確認が必要です`,
+      );
+    } else {
+      lines.push('- ⚠️ **修正を最後まで完了できませんでした**。マージ前に手動での確認が必要です');
+    }
   }
 
   if (uncertain.length > 0) {
