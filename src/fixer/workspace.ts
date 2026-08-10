@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -28,7 +28,13 @@ export class Workspace {
    * git 管理下でない場合はコピーしたうえで初期化し、diff を取れる状態にする。
    */
   static async create(sourcePath: string, branch: string): Promise<Workspace> {
-    const dir = await mkdtemp(path.join(tmpdir(), 'api-update-'));
+    // サンドボックス実行では、作業コピーを共有ボリューム上に置く必要がある
+    // （アプリコンテナ内のパスは、兄弟コンテナからは見えないため）。
+    // 値の検証は config/env.ts が起動時に行う。ここで env を import すると
+    // このモジュールが DB 設定に依存してしまうため、直接読む。
+    const root = process.env['WORKSPACE_ROOT'] ?? tmpdir();
+    await mkdir(root, { recursive: true });
+    const dir = await mkdtemp(path.join(root, 'api-update-'));
 
     if (await isGitRepository(sourcePath)) {
       await exec('git', ['clone', '--no-hardlinks', '--quiet', sourcePath, dir], { timeout: GIT_TIMEOUT_MS });

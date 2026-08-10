@@ -10,6 +10,15 @@ services:
       PORT: 3000
       DATABASE_URL: postgres://api_update:api_update@db:5432/api_update
       REDIS_URL: redis://redis:6379
+      # 対象リポジトリのコマンドは使い捨てコンテナで実行する。
+      # 作業コピーは兄弟コンテナと共有するボリューム上に置く必要がある。
+      WORKSPACE_ROOT: /workspaces
+      SANDBOX_WORKSPACE_VOLUME: api_update_workspaces
+    # Docker ソケットは root:root 660 のため、非 root で動くアプリからは
+    # グループ経由でしか触れない。ソケットを渡す時点でホストに対する強い権限を
+    # 与えているので、この追加で脅威モデルは実質変わらない。
+    group_add:
+      - "0"
     ports:
       - "${PORT:-3000}:3000"
     volumes:
@@ -19,6 +28,12 @@ services:
       - ./package.json:/app/package.json
       - ./tsconfig.json:/app/tsconfig.json
       - app_node_modules:/app/node_modules
+      # 作業コピー。サンドボックスコンテナへ同じボリュームをマウントする
+      - workspaces:/workspaces
+      # 兄弟コンテナを起動するために Docker ソケットを渡す。
+      # これはホストに対する強い権限なので、アプリ側のコードを信頼できることが前提。
+      # 見返りに、信頼できない対象リポジトリのコードがこのコンテナで動かなくなる。
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       db:
         condition: service_healthy
@@ -62,3 +77,7 @@ volumes:
   app_node_modules:
   db_data:
   redis_data:
+  # サンドボックスコンテナへ `--volume api_update_workspaces:/workspaces` で渡すため、
+  # 名前を固定する（compose の自動プレフィックスに依存しない）
+  workspaces:
+    name: api_update_workspaces

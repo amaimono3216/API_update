@@ -2,7 +2,8 @@ import type { ImpactJudgement } from '../analyzer/types.js';
 import type { BreakingChange } from '../detector/types.js';
 import { applyEdits } from './edit.js';
 import type { EditRequest, FileContext } from './fix-agent.js';
-import { runCommand, type TestCommand } from './test-runner.js';
+import type { Runtime } from './runtime.js';
+import type { CommandRunner } from './sandbox.js';
 import type { CodeEdit, EditApplyResult, FixAttempt, TestResult } from './types.js';
 import type { Workspace } from './workspace.js';
 
@@ -24,7 +25,9 @@ export interface FixLoopParams {
   affected: ImpactJudgement[];
   changesByLocation: Map<string, BreakingChange>;
   /** 未検出の場合、テスト検証はスキップして修正のみ行う。 */
-  testCommand?: TestCommand | undefined;
+  runtime?: Runtime | undefined;
+  /** コマンド実行の主体。runtime を指定する場合は必須。 */
+  runner?: CommandRunner | undefined;
   generateEdits?: EditGenerator;
 }
 
@@ -80,7 +83,11 @@ export async function runFixLoop(
       '修正を適用しました',
     );
 
-    const test = params.testCommand ? await runCommand(workspace.dir, params.testCommand) : null;
+    // テスト実行時はネットワークを遮断する（依存取得は事前に済ませている）
+    const test =
+      params.runtime && params.runner
+        ? await params.runner.run(workspace.dir, params.runtime, params.runtime.test, { network: false })
+        : null;
     lastTest = test;
     attempts.push({
       attempt,

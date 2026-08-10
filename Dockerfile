@@ -24,8 +24,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git ca-certificates tini python3 python3-venv python3-pip python3-pytest \
     && rm -rf /var/lib/apt/lists/*
+# 対象リポジトリのコマンドを使い捨てコンテナで実行するため、Docker CLI だけを置く
+# （apt の docker.io はデーモン一式を含み、イメージが 350MB ほど膨らむ）
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
 # Go ソース解析用のバイナリ。ツールチェーン全体（約 500MB）は持ち込まない
 COPY --from=go-extract /out/go-extract /usr/local/bin/go-extract
+# 作業コピーの置き場。名前付きボリュームは空のとき、この所有者設定を引き継ぐ
+RUN mkdir -p /workspaces && chown node:node /workspaces
 WORKDIR /app
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
