@@ -31,6 +31,17 @@ const schema = z.object({
 
   /** 通知先。未設定の場合はログ出力にフォールバックする。 */
   SLACK_WEBHOOK_URL: z.url().optional(),
+
+  // ③ 対象リポジトリのコマンド実行を隔離するための設定
+  /** false にすると対象リポジトリのコードをアプリコンテナ内で直接実行する（非推奨）。 */
+  SANDBOX_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  /** 作業コピーの置き場。サンドボックスと共有するボリュームのマウント先。 */
+  WORKSPACE_ROOT: z.string().optional(),
+  /** 上記マウント先に対応する Docker ボリューム名。 */
+  SANDBOX_WORKSPACE_VOLUME: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

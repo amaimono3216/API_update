@@ -8,7 +8,9 @@ import type { ImpactJudgement } from '../analyzer/types.js';
 import type { BreakingChange } from '../detector/types.js';
 import { applyEdits } from './edit.js';
 import { buildBranchName, runFixLoop, type EditGenerator } from './fix-loop.js';
-import { commandExists, detectInstallCommands, detectTestCommand, runCommand } from './test-runner.js';
+import { detectRuntime } from './runtime.js';
+import { createRunner, DockerSandboxRunner, LocalRunner } from './sandbox.js';
+import { commandExists, runCommand } from './test-runner.js';
 import type { CodeEdit } from './types.js';
 import { Workspace } from './workspace.js';
 
@@ -116,76 +118,160 @@ describe('Workspace', () => {
   });
 });
 
-describe('detectTestCommand', () => {
-  it('package.json の test スクリプトを検出する', async () => {
+describe('detectRuntime', () => {
+  it('package.json の test スクリプトから Node ランタイムを判定する', async () => {
     const dir = await makeTempDir();
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
-    assert.deepEqual(await detectTestCommand(dir), { command: 'npm', args: ['test', '--silent'] });
+
+    const runtime = await detectRuntime(dir);
+    assert.equal(runtime?.id, 'node');
+    assert.deepEqual(runtime?.test, { command: 'npm', args: ['test', '--silent'] });
+    assert.match(runtime?.image ?? '', /^node:/);
   });
 
-  it('test スクリプトが無い package.json では検出しない', async () => {
+  it('test スクリプトが無い package.json では判定しない', async () => {
     const dir = await makeTempDir();
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ scripts: { build: 'tsc' } }));
-    assert.equal(await detectTestCommand(dir), undefined);
+    assert.equal(await detectRuntime(dir), undefined);
   });
 
-  it('Python プロジェクトを検出する', async () => {
-    const py = await makeTempDir();
-    await writeFile(path.join(py, 'pyproject.toml'), '[project]\n');
-    assert.equal((await detectTestCommand(py))?.command, 'pytest');
+  it('壊れた package.json でも例外にしない', async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, 'package.json'), '{ 壊れている');
+    assert.equal(await detectRuntime(dir), undefined);
   });
 
-  it('実行環境に無いコマンドは返さない', async () => {
-    // 無いコマンドを返すと、修正ループが 3 回とも「テスト失敗」で無駄に回る
+  it('ロックファイルがある場合のみインストール手順を返す', async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'x' } }));
+    assert.deepEqual((await detectRuntime(dir))?.install, []);
+
+    await writeFile(path.join(dir, 'package-lock.json'), '{}');
+    assert.deepEqual((await detectRuntime(dir))?.install, [{ command: 'npm', args: ['ci'] }]);
+  });
+
+  it('Python は仮想環境を作ってから依存を入れる', async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, 'requirements.txt'), 'stripe==12.0.0\n');
+
+    const runtime = await detectRuntime(dir);
+    assert.equal(runtime?.id, 'python');
+    assert.deepEqual(runtime?.install[0], { command: 'python3', args: ['-m', 'venv', '.venv'] });
+    // システム Python を汚さないよう、仮想環境側の pip を使う
+    assert.ok(runtime?.install[1]?.command.includes('.venv'), runtime?.install[1]?.command);
+    assert.ok(runtime?.install.some((c) => c.args.includes('requirements.txt')));
+  });
+
+  it('仮想環境があればそちらの pytest を使う', async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, 'requirements.txt'), '');
+    assert.deepEqual((await detectRuntime(dir))?.test, { command: 'pytest', args: ['-q'] });
+
+    await mkdir(path.join(dir, '.venv', 'bin'), { recursive: true });
+    await writeFile(path.join(dir, '.venv', 'bin', 'pytest'), '');
+    assert.ok((await detectRuntime(dir))?.test.command.includes('.venv'));
+  });
+
+  it('Go / Rust はツールチェーンの有無に関わらず判定する', async () => {
+    // 実行可否はランナー側の判断。ここでは構成ファイルだけを見る
     const go = await makeTempDir();
     await writeFile(path.join(go, 'go.mod'), 'module example\n');
+    const goRuntime = await detectRuntime(go);
+    assert.equal(goRuntime?.id, 'go');
+    assert.match(goRuntime?.image ?? '', /^golang:/);
 
-    const command = await detectTestCommand(go);
-    if (await commandExists('go')) {
-      assert.deepEqual(command, { command: 'go', args: ['test', './...'] });
-    } else {
-      assert.equal(command, undefined);
-    }
+    const rust = await makeTempDir();
+    await writeFile(path.join(rust, 'Cargo.toml'), '[package]\n');
+    assert.equal((await detectRuntime(rust))?.id, 'rust');
+  });
+});
+
+describe('LocalRunner', () => {
+  const nodeRuntime = {
+    id: 'node' as const,
+    image: 'node:22-bookworm-slim',
+    install: [],
+    test: { command: 'npm', args: ['test'] },
+  };
+
+  it('実行環境に無いコマンドは executed=false で返す', async () => {
+    const dir = await makeTempDir();
+    const result = await new LocalRunner().run(
+      dir,
+      { ...nodeRuntime, test: { command: 'definitely-not-a-real-command-xyz', args: [] } },
+      { command: 'definitely-not-a-real-command-xyz', args: [] },
+      { network: false },
+    );
+    assert.equal(result.executed, false);
+    assert.match(result.output, /実行環境にありません/);
+  });
+
+  it('存在するコマンドは実行する', async () => {
+    const dir = await makeTempDir();
+    const result = await new LocalRunner().run(
+      dir,
+      nodeRuntime,
+      { command: process.execPath, args: ['-e', 'process.exit(0)'] },
+      { network: false },
+    );
+    assert.equal(result.passed, true);
   });
 
   it('コマンドの有無を判定できる', async () => {
     assert.equal(await commandExists('definitely-not-a-real-command-xyz'), false);
     assert.equal(await commandExists(process.platform === 'win32' ? 'cmd' : 'sh'), true);
   });
+});
 
-  it('壊れた package.json でも例外にしない', async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, 'package.json'), '{ 壊れている');
-    assert.equal(await detectTestCommand(dir), undefined);
+describe('DockerSandboxRunner', () => {
+  const runtime = {
+    id: 'python' as const,
+    image: 'python:3.12-slim-bookworm',
+    install: [],
+    test: { command: 'pytest', args: ['-q'] },
+  };
+
+  it('共有ボリューム外の作業ディレクトリを拒否する', async () => {
+    // ボリューム外のパスはサンドボックスから見えないため、黙って動かすと誤った結果になる
+    const runner = new DockerSandboxRunner('api_update_workspaces', '/workspaces');
+    await assert.rejects(
+      () => runner.run('/tmp/somewhere-else', runtime, runtime.test, { network: false }),
+      /共有ボリュームの外/,
+    );
+  });
+});
+
+describe('createRunner', () => {
+  const log = { info: () => {}, warn: () => {} };
+
+  /** 環境変数を退避して差し替える。 */
+  async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+    const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+    for (const [key, value] of Object.entries(vars)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    try {
+      return await fn();
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  it('明示的に無効化されていればローカル実行になる', async () => {
+    const runner = await withEnv({ SANDBOX_ENABLED: 'false' }, () => createRunner(log));
+    assert.equal(runner.kind, 'local');
   });
 
-  it('ロックファイルがある場合のみインストールコマンドを返す', async () => {
-    const dir = await makeTempDir();
-    assert.deepEqual(await detectInstallCommands(dir), []);
-    await writeFile(path.join(dir, 'package-lock.json'), '{}');
-    assert.deepEqual(await detectInstallCommands(dir), [{ command: 'npm', args: ['ci'] }]);
-  });
-
-  it('Python は仮想環境を作ってから依存を入れる', async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, 'requirements.txt'), 'stripe==12.0.0\n');
-    const commands = await detectInstallCommands(dir);
-
-    assert.deepEqual(commands[0], { command: 'python3', args: ['-m', 'venv', '.venv'] });
-    // システム Python を汚さないよう、仮想環境側の pip を使う
-    assert.ok(commands[1]?.command.includes('.venv'), commands[1]?.command);
-    assert.ok(commands.some((c) => c.args.includes('requirements.txt')));
-  });
-
-  it('仮想環境があればそちらの pytest を使う', async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, 'requirements.txt'), '');
-    assert.deepEqual(await detectTestCommand(dir), { command: 'pytest', args: ['-q'] });
-
-    await mkdir(path.join(dir, '.venv', 'bin'), { recursive: true });
-    await writeFile(path.join(dir, '.venv', 'bin', 'pytest'), '');
-    const command = await detectTestCommand(dir);
-    assert.ok(command?.command.includes('.venv'), command?.command);
+  it('ボリューム設定が無ければローカル実行にフォールバックする', async () => {
+    const runner = await withEnv(
+      { SANDBOX_ENABLED: 'true', SANDBOX_WORKSPACE_VOLUME: undefined, WORKSPACE_ROOT: undefined },
+      () => createRunner(log),
+    );
+    assert.equal(runner.kind, 'local');
   });
 });
 
@@ -301,7 +387,13 @@ describe('runFixLoop', () => {
     toVersion: '2026-07-30',
     affected: [judgement],
     changesByLocation: new Map([[change.location, change]]),
-    testCommand: { command: 'npm', args: ['test', '--silent'] },
+    runtime: {
+      id: 'node' as const,
+      image: 'node:22-bookworm-slim',
+      install: [],
+      test: { command: 'npm', args: ['test', '--silent'] },
+    },
+    runner: new LocalRunner(),
   };
 
   it('1 回で修正が通ればそこで終了する', async () => {
@@ -444,7 +536,7 @@ describe('runFixLoop', () => {
       ],
     });
 
-    const result = await runFixLoop(ws, { ...params, testCommand: undefined, generateEdits: generate }, silentLog);
+    const result = await runFixLoop(ws, { ...params, runtime: undefined, generateEdits: generate }, silentLog);
     assert.equal(result.succeeded, true);
     assert.equal(result.test, null);
     await ws.dispose();

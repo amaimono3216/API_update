@@ -3,7 +3,8 @@ import { findDiffById } from '../db/diffs.js';
 import { updateRun } from '../db/runs.js';
 import { isFixAgentAvailable } from './fix-agent.js';
 import { buildBranchName, runFixLoop, type EditGenerator } from './fix-loop.js';
-import { detectInstallCommands, detectTestCommand, runCommand } from './test-runner.js';
+import { detectRuntime, type Runtime } from './runtime.js';
+import { createRunner, type CommandRunner } from './sandbox.js';
 import type { FixResult } from './types.js';
 import { Workspace } from './workspace.js';
 
@@ -19,6 +20,8 @@ export interface FixOptions {
   keepWorkdir?: boolean;
   /** 修正案の生成器。既定は LLM。 */
   generateEdits?: EditGenerator;
+  /** コマンド実行の主体。既定は設定に応じてサンドボックス / ローカル。 */
+  runner?: CommandRunner;
 }
 
 /**
@@ -49,10 +52,15 @@ export async function fix(
   try {
     await updateRun(runId, { status: 'fixing' });
 
-    if (options.installDependencies !== false) await installDependencies(workspace.dir, log);
+    const runner = options.runner ?? (await createRunner(log));
+    let runtime = await detectRuntime(workspace.dir);
 
-    const testCommand = await detectTestCommand(workspace.dir);
-    if (!testCommand) log.warn({}, 'テストコマンドを検出できませんでした。修正のみ行い検証はスキップします');
+    if (runtime && options.installDependencies !== false) {
+      await installDependencies(workspace.dir, runtime, runner, log);
+      // 依存関係の導入で仮想環境が作られる場合があるため、テストコマンドを取り直す
+      runtime = (await detectRuntime(workspace.dir)) ?? runtime;
+    }
+    if (!runtime) log.warn({}, '対応するランタイムを検出できませんでした。修正のみ行い検証はスキップします');
 
     const loop = await runFixLoop(
       workspace,
@@ -62,7 +70,7 @@ export async function fix(
         toVersion: diff.to_version,
         affected: analysis.affected,
         changesByLocation: new Map(diff.changes.map((c) => [c.location, c])),
-        testCommand,
+        ...(runtime ? { runtime, runner } : {}),
         ...(options.generateEdits ? { generateEdits: options.generateEdits } : {}),
       },
       log,
@@ -105,12 +113,17 @@ const toFixSummary = (result: FixResult) => ({
     : null,
 });
 
-async function installDependencies(dir: string, log: Logger): Promise<void> {
-  const commands = await detectInstallCommands(dir);
-  if (commands.length === 0) return;
+async function installDependencies(
+  dir: string,
+  runtime: Runtime,
+  runner: CommandRunner,
+  log: Logger,
+): Promise<void> {
+  if (runtime.install.length === 0) return;
 
-  for (const command of commands) {
-    const result = await runCommand(dir, command);
+  for (const command of runtime.install) {
+    // 依存取得だけはネットワークを許可する（テスト実行時は遮断する）
+    const result = await runner.run(dir, runtime, command, { network: true });
     // 依存解決に失敗してもテスト実行まで進め、実際の失敗内容を LLM に見せる
     if (!result.passed) {
       log.warn(
@@ -120,5 +133,5 @@ async function installDependencies(dir: string, log: Logger): Promise<void> {
       return;
     }
   }
-  log.info({ steps: commands.length }, '依存関係をインストールしました');
+  log.info({ runtime: runtime.id, steps: runtime.install.length }, '依存関係をインストールしました');
 }
