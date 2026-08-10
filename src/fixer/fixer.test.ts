@@ -8,7 +8,7 @@ import type { ImpactJudgement } from '../analyzer/types.js';
 import type { BreakingChange } from '../detector/types.js';
 import { applyEdits } from './edit.js';
 import { buildBranchName, runFixLoop, type EditGenerator } from './fix-loop.js';
-import { detectInstallCommands, detectTestCommand, runCommand } from './test-runner.js';
+import { commandExists, detectInstallCommands, detectTestCommand, runCommand } from './test-runner.js';
 import type { CodeEdit } from './types.js';
 import { Workspace } from './workspace.js';
 
@@ -129,14 +129,28 @@ describe('detectTestCommand', () => {
     assert.equal(await detectTestCommand(dir), undefined);
   });
 
-  it('Python / Go プロジェクトを検出する', async () => {
+  it('Python プロジェクトを検出する', async () => {
     const py = await makeTempDir();
     await writeFile(path.join(py, 'pyproject.toml'), '[project]\n');
     assert.equal((await detectTestCommand(py))?.command, 'pytest');
+  });
 
+  it('実行環境に無いコマンドは返さない', async () => {
+    // 無いコマンドを返すと、修正ループが 3 回とも「テスト失敗」で無駄に回る
     const go = await makeTempDir();
     await writeFile(path.join(go, 'go.mod'), 'module example\n');
-    assert.deepEqual(await detectTestCommand(go), { command: 'go', args: ['test', './...'] });
+
+    const command = await detectTestCommand(go);
+    if (await commandExists('go')) {
+      assert.deepEqual(command, { command: 'go', args: ['test', './...'] });
+    } else {
+      assert.equal(command, undefined);
+    }
+  });
+
+  it('コマンドの有無を判定できる', async () => {
+    assert.equal(await commandExists('definitely-not-a-real-command-xyz'), false);
+    assert.equal(await commandExists(process.platform === 'win32' ? 'cmd' : 'sh'), true);
   });
 
   it('壊れた package.json でも例外にしない', async () => {

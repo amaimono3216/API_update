@@ -57,7 +57,7 @@ export class OperationIndex {
 /** 呼び出しチェーン（クライアント変数名を除く）から操作を解決する。 */
 export type PathResolver = (chain: string[], index: OperationIndex) => OperationRef | undefined;
 
-export type SourceLanguage = 'typescript' | 'python';
+export type SourceLanguage = 'typescript' | 'python' | 'go';
 
 export interface SdkConvention {
   provider: string;
@@ -187,6 +187,76 @@ export function underscoreMethodResolver(options: { pathPrefix?: string } = {}):
   };
 }
 
+// ---------------------------------------------------------------------------
+// Go: リソースパスが 1 つの PascalCase 識別子に連結されている
+// ---------------------------------------------------------------------------
+
+const GO_VERB_RULES: Record<string, VerbRule> = {
+  new: { method: 'post', target: 'collection' },
+  create: { method: 'post', target: 'collection' },
+  list: { method: 'get', target: 'collection' },
+  get: { method: 'get', target: 'instance' },
+  retrieve: { method: 'get', target: 'instance' },
+  update: { method: 'post', target: 'instance' },
+  del: { method: 'delete', target: 'instance' },
+  delete: { method: 'delete', target: 'instance' },
+};
+
+/**
+ * `V1PaymentIntents` を `['V1', 'Payment', 'Intents']` に分割する。
+ *
+ * 数字は直前の語に含める（`V1` を `V` と `1` に割らない）。
+ * 連続する大文字は略語として 1 語にまとめる（`HTTPProxy` → `HTTP` / `Proxy`）。
+ */
+export const splitPascalCase = (value: string): string[] =>
+  value.match(/[A-Z][a-z0-9]+|[A-Z]+(?![a-z])|[a-z0-9]+/g) ?? [];
+
+/** 語の隣接関係を `_`（同一セグメント）か `/`（セグメント区切り）で埋める全通りを返す。 */
+function joinCombinations(words: string[], limit: number): string[] {
+  if (words.length === 0) return [];
+  if (words.length > limit) return [words.map((w) => w.toLowerCase()).join('/')];
+
+  const results: string[] = [];
+  const total = 2 ** (words.length - 1);
+  for (let mask = 0; mask < total; mask += 1) {
+    let path = words[0]?.toLowerCase() ?? '';
+    for (let i = 1; i < words.length; i += 1) {
+      path += (mask & (1 << (i - 1))) === 0 ? `/${words[i]?.toLowerCase()}` : `_${words[i]?.toLowerCase()}`;
+    }
+    results.push(path);
+  }
+  return results;
+}
+
+/**
+ * Go の SDK 向け。`sc.V1Customers.Create` → `POST /v1/customers` のように、
+ * パスの区切りが失われた PascalCase 識別子からパスを復元する。
+ *
+ * `V1PaymentIntents` は `/v1/payment/intents` とも `/v1/payment_intents` とも読めるため、
+ * 語の区切り方を総当たりし、実スペックに存在するものだけを採用する。
+ */
+export function goIdentifierResolver(options: { maxWords?: number } = {}): PathResolver {
+  const limit = options.maxWords ?? 6;
+
+  return (chain, index) => {
+    if (chain.length < 2) return undefined;
+
+    const verb = (chain[chain.length - 1] ?? '').toLowerCase();
+    const rule = GO_VERB_RULES[verb];
+    if (!rule) return undefined;
+
+    const words = chain.slice(0, -1).flatMap((segment) => splitPascalCase(segment));
+    if (words.length === 0) return undefined;
+
+    for (const base of joinCombinations(words, limit)) {
+      const path = rule.target === 'instance' ? `/${base}/{}` : `/${base}`;
+      const found = index.lookup(path, rule.method);
+      if (found) return found;
+    }
+    return undefined;
+  };
+}
+
 /** 複数の解決方法を順に試す。SDK のバージョン差を吸収するために使う。 */
 export function firstMatchResolver(...resolvers: PathResolver[]): PathResolver {
   return (chain, index) => {
@@ -312,6 +382,27 @@ export const SDK_CONVENTIONS: SdkConvention[] = [
     modules: ['twilio', 'twilio.rest'],
     clientNames: ['twilio', 'client'],
     resolve: twilioApiResolver,
+  },
+
+  // --- Go ---
+  // Twilio Go（`client.Api.CreateMessage` + セッター）と Slack Go（`api.PostMessage`）は
+  // 呼び出し名が仕様のパスから離れており規則で対応づけられないため未対応。
+  {
+    provider: 'stripe',
+    language: 'go',
+    modules: ['github.com/stripe/stripe-go'],
+    clientNames: ['sc', 'stripe'],
+    // `sc.V1Customers.Create` のようにパスが 1 語に連結されている
+    resolve: goIdentifierResolver(),
+  },
+  {
+    provider: 'openai',
+    language: 'go',
+    modules: ['github.com/openai/openai-go'],
+    clientNames: ['openai'],
+    // `client.Chat.Completions.New` は名前空間が分かれているが、
+    // goIdentifierResolver が全セグメントを語に分解して扱うため同じ経路で解決できる
+    resolve: goIdentifierResolver(),
   },
 ];
 
