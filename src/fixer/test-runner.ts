@@ -22,9 +22,16 @@ const exists = async (target: string): Promise<boolean> => {
   }
 };
 
+/** Python の依存を入れる仮想環境。作業コピー内に閉じ込める。 */
+const VENV_DIR = '.venv';
+const VENV_BIN = path.join(VENV_DIR, 'bin');
+
 /**
  * リポジトリ既存のテストコマンドを検出する。
  * 検出できない場合は undefined を返し、テスト検証なしで修正結果を返す。
+ *
+ * 依存関係のインストール後に呼ぶこと。仮想環境が作られていればそちらの
+ * pytest を使う（対象リポジトリの依存が入っているのは仮想環境側のため）。
  */
 export async function detectTestCommand(dir: string): Promise<TestCommand | undefined> {
   const packageJsonPath = path.join(dir, 'package.json');
@@ -37,21 +44,51 @@ export async function detectTestCommand(dir: string): Promise<TestCommand | unde
     }
   }
 
-  for (const marker of ['pytest.ini', 'pyproject.toml', 'setup.cfg', 'tox.ini']) {
-    if (await exists(path.join(dir, marker))) return { command: 'pytest', args: ['-q'] };
+  for (const marker of ['pytest.ini', 'pyproject.toml', 'setup.cfg', 'tox.ini', 'requirements.txt']) {
+    if (!(await exists(path.join(dir, marker)))) continue;
+    const venvPytest = path.join(dir, VENV_BIN, 'pytest');
+    return (await exists(venvPytest))
+      ? { command: path.join('.', VENV_BIN, 'pytest'), args: ['-q'] }
+      : { command: 'pytest', args: ['-q'] };
   }
+
   if (await exists(path.join(dir, 'go.mod'))) return { command: 'go', args: ['test', './...'] };
   if (await exists(path.join(dir, 'Cargo.toml'))) return { command: 'cargo', args: ['test'] };
 
   return undefined;
 }
 
-/** ロックファイルがある場合のみ、再現性のあるインストールコマンドを返す。 */
-export async function detectInstallCommand(dir: string): Promise<TestCommand | undefined> {
-  if (await exists(path.join(dir, 'package-lock.json'))) return { command: 'npm', args: ['ci'] };
-  if (await exists(path.join(dir, 'yarn.lock'))) return { command: 'yarn', args: ['install', '--frozen-lockfile'] };
-  if (await exists(path.join(dir, 'pnpm-lock.yaml'))) return { command: 'pnpm', args: ['install', '--frozen-lockfile'] };
-  return undefined;
+/**
+ * 依存関係のインストール手順を返す。順に実行する。
+ *
+ * Python は作業コピー内に仮想環境を作ってそこへ入れる。コンテナの
+ * システム Python を汚さず、実行のたびに独立した状態から始められる。
+ */
+export async function detectInstallCommands(dir: string): Promise<TestCommand[]> {
+  if (await exists(path.join(dir, 'package-lock.json'))) return [{ command: 'npm', args: ['ci'] }];
+  if (await exists(path.join(dir, 'yarn.lock'))) return [{ command: 'yarn', args: ['install', '--frozen-lockfile'] }];
+  if (await exists(path.join(dir, 'pnpm-lock.yaml'))) {
+    return [{ command: 'pnpm', args: ['install', '--frozen-lockfile'] }];
+  }
+
+  const pip = path.join('.', VENV_BIN, 'pip');
+  if (await exists(path.join(dir, 'requirements.txt'))) {
+    return [
+      { command: 'python3', args: ['-m', 'venv', VENV_DIR] },
+      { command: pip, args: ['install', '--quiet', '-r', 'requirements.txt'] },
+      // テスト実行にも仮想環境側の pytest を使うため、同じ環境に入れる
+      { command: pip, args: ['install', '--quiet', 'pytest'] },
+    ];
+  }
+  if (await exists(path.join(dir, 'pyproject.toml'))) {
+    return [
+      { command: 'python3', args: ['-m', 'venv', VENV_DIR] },
+      { command: pip, args: ['install', '--quiet', '.'] },
+      { command: pip, args: ['install', '--quiet', 'pytest'] },
+    ];
+  }
+
+  return [];
 }
 
 /**

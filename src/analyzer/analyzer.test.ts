@@ -308,6 +308,30 @@ describe('correlate', () => {
     assert.equal(candidates[0]?.match, 'operation');
   });
 
+  it('仕様とコードで命名規則が違っても突き合わせる', () => {
+    // Twilio の仕様は PascalCase（`To`）、SDK は `to` / `from_` / `statusCallback`
+    const site = {
+      file: 'src/sms.ts',
+      line: 1,
+      endLine: 1,
+      provider: 'twilio',
+      chain: ['client', 'messages', 'create'],
+      operation: { method: 'post' as const, path: '/v1/checkout/sessions' },
+      passedParams: ['to', 'from_', 'statusCallback'],
+      snippet: '',
+    };
+
+    for (const [propertyPath, expected] of [
+      ['To', 'direct'],
+      ['From', 'direct'],
+      ['StatusCallback', 'direct'],
+      ['MaxPrice', 'operation'],
+    ] as const) {
+      const candidates = correlate([change({ propertyPath })], [site]);
+      assert.equal(candidates[0]?.match, expected, `${propertyPath} の判定`);
+    }
+  });
+
   it('レスポンス側の変更は direct にしない', () => {
     const candidates = correlate([change({ direction: 'response' })], callSites);
     assert.equal(candidates[0]?.match, 'operation');

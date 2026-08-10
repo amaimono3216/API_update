@@ -4,18 +4,44 @@ import type { CallSite, ImpactCandidate } from './types.js';
 const operationKey = (op: OperationRef): string => `${op.method} ${op.path}`;
 
 /**
+ * 仕様側とコード側で命名規則が異なるため、比較用に正規化する。
+ *
+ *   Twilio  : 仕様は `To` / `StatusCallback`、SDK は `to` / `statusCallback` / `status_callback`
+ *   Python  : 予約語との衝突を避けて `from_` のように末尾へアンダースコアを付ける
+ *
+ * 大小文字と区切り文字を落として比較する。
+ */
+const normalizeName = (name: string): string => name.toLowerCase().replace(/[_-]/g, '');
+
+const leafOf = (propertyPath: string): string | undefined =>
+  propertyPath
+    .split('.')
+    .filter((segment) => segment !== '[]')
+    .pop();
+
+const normalizePath = (propertyPath: string): string =>
+  propertyPath
+    .split('.')
+    .map((segment) => (segment === '[]' ? segment : normalizeName(segment)))
+    .join('.');
+
+/**
  * プロパティパスが一致するかを判定する。
  *
  * 呼び出し側は必ずしも全階層を書くとは限らない（`line_items` の配列要素を
  * 変数経由で組み立てるなど）ため、末尾セグメントの一致も許容する。
  */
 function matchesProperty(propertyPath: string, passedParams: string[]): boolean {
-  if (passedParams.includes(propertyPath)) return true;
-  const leaf = propertyPath.split('.').filter((s) => s !== '[]').pop();
+  const target = normalizePath(propertyPath);
+  if (passedParams.some((param) => normalizePath(param) === target)) return true;
+
+  const leaf = leafOf(propertyPath);
   if (!leaf) return false;
+
+  const targetLeaf = normalizeName(leaf);
   return passedParams.some((param) => {
-    const paramLeaf = param.split('.').filter((s) => s !== '[]').pop();
-    return paramLeaf === leaf;
+    const paramLeaf = leafOf(param);
+    return paramLeaf !== undefined && normalizeName(paramLeaf) === targetLeaf;
   });
 }
 

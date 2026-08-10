@@ -42,6 +42,7 @@ export class Workspace {
     // LLM の編集は文字列の完全一致に依存するため、改行コードを変換させない
     await git(dir, ['config', 'core.autocrlf', 'false']);
     await git(dir, ['config', 'core.eol', 'lf']);
+    await excludeBuildArtifacts(dir);
 
     const baseRef = (await git(dir, ['rev-parse', 'HEAD'])).trim();
     await git(dir, ['checkout', '-b', branch]);
@@ -85,6 +86,35 @@ export class Workspace {
   async dispose(): Promise<void> {
     await rm(this.dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * 依存関係のインストールやテスト実行で生成される成果物を、コミット対象から外す。
+ *
+ * これが無いと `node_modules` や `__pycache__` が PR に混入する。
+ * 対象リポジトリの `.gitignore` は書き換えたくないので、
+ * 作業コピー内でのみ有効な `.git/info/exclude` を使う。
+ */
+async function excludeBuildArtifacts(dir: string): Promise<void> {
+  const patterns = [
+    '# api-update が作業コピー内でのみ適用する除外設定',
+    'node_modules/',
+    '.venv/',
+    'venv/',
+    '__pycache__/',
+    '*.pyc',
+    '.pytest_cache/',
+    '.mypy_cache/',
+    '.ruff_cache/',
+    '.tox/',
+    '*.egg-info/',
+    '.coverage',
+    'htmlcov/',
+    '',
+  ];
+  const excludePath = path.join(dir, '.git', 'info', 'exclude');
+  const existing = await readFile(excludePath, 'utf8').catch(() => '');
+  await writeFile(excludePath, `${existing}\n${patterns.join('\n')}`, 'utf8');
 }
 
 async function isGitRepository(dir: string): Promise<boolean> {

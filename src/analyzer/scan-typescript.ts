@@ -17,7 +17,7 @@ const SCRIPT_KINDS: Record<string, ts.ScriptKind> = {
   '.cjs': ts.ScriptKind.JS,
 };
 
-export const isScannableFile = (path: string): boolean =>
+export const isTypeScriptFile = (path: string): boolean =>
   Object.keys(SCRIPT_KINDS).some((ext) => path.endsWith(ext));
 
 /**
@@ -136,7 +136,7 @@ function resolveRootConvention(root: string, clients: Map<string, SdkConvention>
   const known = clients.get(root);
   if (known) return known;
   const bare = (root.startsWith('this.') ? root.slice(5) : root).toLowerCase();
-  return SDK_CONVENTIONS.find((c) => c.clientNames.includes(bare));
+  return SDK_CONVENTIONS.find((c) => c.language === 'typescript' && c.clientNames.includes(bare));
 }
 
 interface ParsedChain {

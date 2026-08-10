@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { isScannableFile } from './scan-typescript.js';
+import { isScannableFile } from './scan.js';
 
 /** 走査対象から除外するディレクトリ。 */
 const IGNORED_DIRECTORIES = new Set([
