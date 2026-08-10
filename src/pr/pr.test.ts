@@ -5,7 +5,7 @@ import type { AnalysisResult, ImpactJudgement } from '../analyzer/types.js';
 import { PROVIDERS } from '../detector/providers.js';
 import type { BreakingChange } from '../detector/types.js';
 import type { FixResult, TestResult } from '../fixer/types.js';
-import { DryRunPublisher, createPublisher, GitHubPublisher } from './publisher.js';
+import { DryRunPublisher, createPublisher, GitHubPublisher, shouldForcePush } from './publisher.js';
 import { buildPullRequestBody, buildTitle, type TemplateInput } from './template.js';
 import { formatTestResult, parseTestCounts } from './test-summary.js';
 
@@ -193,6 +193,23 @@ describe('buildPullRequestBody', () => {
     assert.match(body, /AssertionError: 失敗しました/);
   });
 
+  it('テストは通ったが編集を適用できなかった場合、テスト失敗と混同しない', () => {
+    const body = buildPullRequestBody(
+      input({
+        fix: fixResult({
+          succeeded: false,
+          test: testResult({ passed: true }),
+          attempts: [
+            { attempt: 1, edits: [], applyFailures: 2, test: testResult({ passed: true }), summary: '1 回目' },
+            { attempt: 2, edits: [], applyFailures: 1, test: testResult({ passed: true }), summary: '2 回目' },
+          ],
+        }),
+      }),
+    );
+    assert.match(body, /適用できなかった修正が 3 件あります/);
+    assert.doesNotMatch(body, /テストが通っていません/);
+  });
+
   it('再修正した場合は試行回数を明示する', () => {
     const body = buildPullRequestBody(
       input({
@@ -253,6 +270,28 @@ describe('buildPullRequestBody', () => {
       const url = match[1] as string;
       assert.ok(new URL(url).pathname.length > 1, `リンク先が空です: ${url}`);
     }
+  });
+});
+
+describe('shouldForcePush', () => {
+  it('自動生成ブランチは force push を許す', () => {
+    assert.equal(shouldForcePush('api-update/stripe-2026-07-29.dahlia-2'), true);
+    assert.equal(shouldForcePush('api-update/twilio-2010-04-01-7'), true);
+  });
+
+  it('自動生成ブランチ以外には絶対に force push しない', () => {
+    for (const branch of ['main', 'master', 'develop', 'release/v1', 'feature/api-update/x', '']) {
+      assert.equal(shouldForcePush(branch), false, `${branch} を force push 対象にしてはいけない`);
+    }
+  });
+
+  it('接頭辞だけのブランチ名は対象外にする', () => {
+    assert.equal(shouldForcePush('api-update/'), false);
+  });
+
+  it('パス操作で接頭辞の外に出ようとするものは拒否する', () => {
+    assert.equal(shouldForcePush('api-update/../main'), false);
+    assert.equal(shouldForcePush('api-update/x/../../main'), false);
   });
 });
 

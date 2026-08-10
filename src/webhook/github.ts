@@ -24,7 +24,8 @@ export interface GitHubPayload {
  * 実行記録への読み書き。DB 実装への依存を持ち込まないよう、必要な操作だけを受け取る。
  */
 export interface RunStore {
-  findByPrUrl: (prUrl: string) => Promise<{ id: string; repository: string } | null>;
+  /** 同じ差分の再実行では 1 つの PR に複数の実行記録が紐づくため、全件返す。 */
+  findAllByPrUrl: (prUrl: string) => Promise<{ id: string; repository: string }[]>;
   setStatus: (id: string, status: 'pr_merged' | 'pr_closed') => Promise<void>;
 }
 
@@ -83,21 +84,27 @@ async function handlePullRequest(payload: GitHubPayload, ctx: HandlerContext): P
   const url = payload.pull_request?.html_url;
   if (!url) return { handled: false, detail: 'PR の URL が含まれていません' };
 
-  const run = await ctx.runs.findByPrUrl(url);
-  if (!run) {
+  const runs = await ctx.runs.findAllByPrUrl(url);
+  const first = runs[0];
+  if (!first) {
     // このシステムが作成した PR 以外のイベントも届くため、警告ではなく情報として記録する
     ctx.log.info({ url }, 'このシステムが作成した PR ではありません');
     return { handled: false, detail: '対応する実行記録が見つかりません' };
   }
 
   const merged = payload.pull_request?.merged === true;
-  await ctx.runs.setStatus(run.id, merged ? 'pr_merged' : 'pr_closed');
-  ctx.log.info({ runId: run.id, url, merged }, 'PR の結末を記録しました');
+  const status = merged ? 'pr_merged' : 'pr_closed';
+  for (const run of runs) await ctx.runs.setStatus(run.id, status);
+  ctx.log.info({ runIds: runs.map((r) => r.id), url, merged }, 'PR の結末を記録しました');
 
+  // 実行記録が複数あっても通知は 1 回だけにする
   if (merged) {
-    await ctx.notifier.notify({ type: 'pr_merged', repository: run.repository, url });
+    await ctx.notifier.notify({ type: 'pr_merged', repository: first.repository, url });
   }
-  return { handled: true, detail: merged ? 'PR のマージを記録しました' : 'PR のクローズを記録しました' };
+  return {
+    handled: true,
+    detail: `${merged ? 'PR のマージ' : 'PR のクローズ'}を ${runs.length} 件の実行記録に記録しました`,
+  };
 }
 
 /** App のインストール状況。監視対象リポジトリの管理に使う（現状は記録のみ）。 */

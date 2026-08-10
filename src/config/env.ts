@@ -17,6 +17,8 @@ const schema = z.object({
   DETECT_TIMEZONE: z.string().default('Asia/Tokyo'),
   STRIPE_OPENAPI_URL: z.url().optional(),
   OPENAI_OPENAPI_URL: z.url().optional(),
+  TWILIO_OPENAPI_URL: z.url().optional(),
+  SLACK_OPENAPI_URL: z.url().optional(),
 
   // ② 影響範囲特定モジュール（未設定の場合、LLM 判定はスキップされる）
   ANTHROPIC_API_KEY: z.string().optional(),

@@ -48,8 +48,10 @@ export async function detect(providerId: ProviderId, log: Logger): Promise<Detec
 
 async function run(providerId: ProviderId, log: Logger): Promise<DetectionOutcome> {
   const provider = resolveProvider(providerId, {
-    stripeSpecUrl: env.STRIPE_OPENAPI_URL,
-    openaiSpecUrl: env.OPENAI_OPENAPI_URL,
+    STRIPE_OPENAPI_URL: env.STRIPE_OPENAPI_URL,
+    OPENAI_OPENAPI_URL: env.OPENAI_OPENAPI_URL,
+    TWILIO_OPENAPI_URL: env.TWILIO_OPENAPI_URL,
+    SLACK_OPENAPI_URL: env.SLACK_OPENAPI_URL,
   });
 
   const startedAt = Date.now();

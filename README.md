@@ -31,7 +31,27 @@ curl http://localhost:3000/health
 
 ## ① 監視・検知モジュール (Update Detector)
 
-Stripe / OpenAI の公開 OpenAPI スペックを定期取得し、前回分との差分から破壊的変更を抽出する。
+各サービスの公開 OpenAPI スペックを定期取得し、前回分との差分から破壊的変更を抽出する。
+
+### 監視対象
+
+| プロバイダ | 仕様 | SDK 呼び出し → パスの対応 |
+| --- | --- | --- |
+| Stripe | OpenAPI 3 | `stripe.checkout.sessions.create` → `/v1/checkout/sessions` |
+| OpenAI | OpenAPI 3 (YAML) | `openai.chat.completions.create` → `/chat/completions` |
+| Twilio | OpenAPI 3 | `client.messages.create` → `/2010-04-01/Accounts/{AccountSid}/Messages.json` |
+| Slack | **Swagger 2.0** | `client.chat.postMessage` → `/chat.postMessage` |
+
+対応づけの規則は SDK ごとに根本的に異なるため、[src/analyzer/sdk-map.ts](src/analyzer/sdk-map.ts) で
+プロバイダごとに解決関数を持たせている。いずれも推測を含むため、生成した候補は
+**必ず実スペックのパスと突き合わせて検証**する。
+
+Slack は Swagger 2.0 のため、取得時に [src/detector/normalize.ts](src/detector/normalize.ts) で
+OpenAPI 3 相当へ正規化する（`definitions` → `components.schemas`、`in: formData` → `requestBody` など）。
+差分エンジン側は OpenAPI 3 だけを前提にできる。
+
+> **対象外**: AWS は OpenAPI ではなく Smithy/botocore 形式（`operations` / `shapes`）のため別エンジンが必要。
+> Shopify は REST が 2024/10 にレガシー化し GraphQL 移行中のため、追随対象としての価値が薄い。
 
 ```
 fetchSpec ──> saveSnapshot ──> diffOpenApi ──> saveDiff ──> (破壊的変更あれば ② へ)
@@ -240,6 +260,24 @@ node:test / Jest / Vitest / pytest / Mocha の出力から抽出する。
 
 push はトークンを埋めた URL 経由で行い、作業ディレクトリの git 設定にトークンを残さない。
 
+**適用できた修正が 1 件も無い場合、PR は作成しない。** 空の PR はノイズにしかならないため。
+
+### ブランチ名と再実行
+
+ブランチ名は `api-update/{provider}-{version}-{diffId}` 形式。末尾の差分 ID が無いと、
+API バージョンが変わらないまま仕様だけ更新されるプロバイダ（Twilio の `2010-04-01` など）で
+別の破壊的変更が同じブランチ名になってしまう。
+
+| 状況 | 挙動 |
+| --- | --- |
+| 異なる差分 | 必ず別ブランチ |
+| 同じ差分の再実行 | 同じブランチを **force push で上書き**し、既存 PR を更新する |
+
+再実行では作業コピーをベースから作り直すため、リモートに残った前回のブランチとは
+履歴が繋がらない。そのため force push が必要になる。ただし
+[`shouldForcePush()`](src/pr/publisher.ts) で **`api-update/` 配下のブランチに限定**しており、
+`main` や利用者のブランチには決して force push しない。
+
 > **未検証**: `GitHubPublisher` は認証情報が未設定のため、実際の GitHub API に対する
 > 動作確認ができていない。型チェックとビルドのみ通した状態。
 
@@ -371,6 +409,7 @@ docker build --target prod -t api-update:prod .
     ├── scripts/            # 開発用スクリプト
     ├── detector/           # ① 監視・検知モジュール
     │   ├── providers.ts    #   監視対象の定義
+    │   ├── normalize.ts    #   Swagger 2.0 → OpenAPI 3 の正規化
     │   ├── fetch-spec.ts   #   スペック取得・パース・ハッシュ化
     │   ├── schema-diff.ts  #   スキーマの再帰比較
     │   ├── ref-index.ts    #   スキーマ → 参照元操作の逆引き
@@ -437,6 +476,8 @@ docker build --target prod -t api-update:prod .
 | `DETECT_TIMEZONE` | `Asia/Tokyo` | スケジュールのタイムゾーン |
 | `STRIPE_OPENAPI_URL` | Stripe 公式 spec3.json | 監視対象スペックの上書き |
 | `OPENAI_OPENAPI_URL` | OpenAI 公式 openapi.yaml | 監視対象スペックの上書き |
+| `TWILIO_OPENAPI_URL` | twilio-oai の v2010 | 監視対象スペックの上書き |
+| `SLACK_OPENAPI_URL` | slack-api-specs の web-api | 監視対象スペックの上書き |
 | `DB_PORT` / `REDIS_PORT` | `5432` / `6379` | ホスト側に公開するポート（衝突時のみ変更） |
 
 ### 最小構成の例

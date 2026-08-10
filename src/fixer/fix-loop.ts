@@ -137,6 +137,34 @@ async function buildFileContexts(
   return [...byFile.values()];
 }
 
-/** 仕様どおり `api-update/stripe-2026-xx` 形式のブランチ名にする。 */
-export const buildBranchName = (provider: string, version: string): string =>
-  `api-update/${provider}-${version.replace(/[^A-Za-z0-9.-]/g, '-')}`;
+/**
+ * git のブランチ名として使える形に整える。
+ *
+ * @see https://git-scm.com/docs/git-check-ref-format
+ */
+function sanitizeRefSegment(value: string): string {
+  const safe = value
+    // 使用できない文字はまとめて 1 つのハイフンにする
+    .replace(/[^A-Za-z0-9.-]+/g, '-')
+    // 連続するドットと、先頭・末尾の記号は git が受け付けない
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[.-]+|[.-]+$/g, '')
+    // `.lock` で終わる参照名も拒否される
+    .replace(/\.lock$/i, 'lock');
+  return safe || 'unknown';
+}
+
+/**
+ * `api-update/stripe-2026-07-29.dahlia-12` 形式のブランチ名を組み立てる。
+ *
+ * 末尾の差分 ID が無いと、API バージョンが変わらないまま仕様だけ更新される
+ * プロバイダ（Twilio の `2010-04-01` など）で、別の破壊的変更が同じブランチ名に
+ * なってしまう。差分 ID を含めることで、
+ *
+ *   - 異なる差分 → 必ず別ブランチ
+ *   - 同じ差分の再実行 → 同じブランチ（やり直しとして扱える）
+ *
+ * という性質が得られる。
+ */
+export const buildBranchName = (provider: string, version: string, diffId: string): string =>
+  `api-update/${sanitizeRefSegment(provider)}-${sanitizeRefSegment(version)}-${sanitizeRefSegment(diffId)}`;

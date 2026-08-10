@@ -416,11 +416,33 @@ describe('runFixLoop', () => {
 });
 
 describe('buildBranchName', () => {
-  it('仕様どおりの形式にする', () => {
-    assert.equal(buildBranchName('stripe', '2026-07-30.clover'), 'api-update/stripe-2026-07-30.clover');
+  it('プロバイダ・バージョン・差分 ID を含む形式にする', () => {
+    assert.equal(buildBranchName('stripe', '2026-07-30.clover', '12'), 'api-update/stripe-2026-07-30.clover-12');
   });
 
-  it('ブランチ名に使えない文字を置き換える', () => {
-    assert.equal(buildBranchName('openai', 'v2 (beta)/x'), 'api-update/openai-v2--beta--x');
+  it('バージョンが同じでも差分が違えば別のブランチになる', () => {
+    // Twilio のように API バージョンが固定のプロバイダで衝突しないこと
+    const first = buildBranchName('twilio', '2010-04-01', '7');
+    const second = buildBranchName('twilio', '2010-04-01', '8');
+    assert.notEqual(first, second);
+    assert.equal(first, 'api-update/twilio-2010-04-01-7');
+  });
+
+  it('同じ差分の再実行では同じブランチ名になる', () => {
+    assert.equal(buildBranchName('stripe', '2026-07-30.clover', '12'), buildBranchName('stripe', '2026-07-30.clover', '12'));
+  });
+
+  it('ブランチ名に使えない文字をまとめて置き換える', () => {
+    assert.equal(buildBranchName('openai', 'v2 (beta)/x', '3'), 'api-update/openai-v2-beta-x-3');
+  });
+
+  it('git が拒否する形（連続ドット・前後の記号・.lock 終わり）を避ける', () => {
+    assert.equal(buildBranchName('p', 'a..b', '1'), 'api-update/p-a.b-1');
+    assert.equal(buildBranchName('p', '-.v1.-', '1'), 'api-update/p-v1-1');
+    assert.equal(buildBranchName('p', 'v1.lock', '1'), 'api-update/p-v1lock-1');
+  });
+
+  it('バージョンが記号だけでも成立するブランチ名にする', () => {
+    assert.equal(buildBranchName('p', '///', '1'), 'api-update/p-unknown-1');
   });
 });

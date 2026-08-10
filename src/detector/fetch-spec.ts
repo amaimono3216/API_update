@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
 
+import { normalizeDocument } from './normalize.js';
 import type { ProviderConfig } from './providers.js';
 import type { OpenApiDocument } from './types.js';
 
@@ -63,5 +64,6 @@ export function parseSpec(text: string, format: 'json' | 'yaml'): OpenApiDocumen
   if (!document || typeof document !== 'object') {
     throw new Error('OpenAPI ドキュメントとして解釈できませんでした。');
   }
-  return document as OpenApiDocument;
+  // Swagger 2.0 はここで OpenAPI 3 相当へ揃える（差分エンジンは OpenAPI 3 前提）
+  return normalizeDocument(document as OpenApiDocument);
 }

@@ -135,8 +135,8 @@ function conventionFromRequire(node: ts.CallExpression): SdkConvention | undefin
 function resolveRootConvention(root: string, clients: Map<string, SdkConvention>): SdkConvention | undefined {
   const known = clients.get(root);
   if (known) return known;
-  const bare = root.startsWith('this.') ? root.slice(5) : root;
-  return SDK_CONVENTIONS.find((c) => c.modules.includes(bare.toLowerCase()));
+  const bare = (root.startsWith('this.') ? root.slice(5) : root).toLowerCase();
+  return SDK_CONVENTIONS.find((c) => c.clientNames.includes(bare));
 }
 
 interface ParsedChain {

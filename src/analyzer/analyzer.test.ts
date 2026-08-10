@@ -64,6 +64,79 @@ describe('resolveOperation', () => {
   });
 });
 
+describe('プロバイダごとのパス解決', () => {
+  /** Twilio / Slack は Stripe とパスの組み立て規則が根本的に異なる。 */
+  const twilioSpec: OpenApiDocument = {
+    openapi: '3.0.1',
+    paths: {
+      '/2010-04-01/Accounts.json': { post: {}, get: {} },
+      '/2010-04-01/Accounts/{AccountSid}/Messages.json': { post: {}, get: {} },
+      '/2010-04-01/Accounts/{AccountSid}/Messages/{Sid}.json': { get: {}, post: {}, delete: {} },
+      '/2010-04-01/Accounts/{AccountSid}/IncomingPhoneNumbers.json': { get: {} },
+    },
+    components: { schemas: {} },
+  };
+  const slackSpec: OpenApiDocument = {
+    openapi: '3.0.0',
+    paths: {
+      '/chat.postMessage': { post: {} },
+      '/conversations.list': { get: {} },
+      '/admin.apps.approve': { post: {} },
+    },
+    components: { schemas: {} },
+  };
+
+  const twilio = findConvention('twilio')!;
+  const slack = findConvention('@slack/web-api')!;
+  const twilioIndex = new OperationIndex(twilioSpec);
+  const slackIndex = new OperationIndex(slackSpec);
+
+  it('Twilio はリソースを PascalCase にし、アカウント配下の .json パスに解決する', () => {
+    assert.deepEqual(twilio.resolve(['messages', 'create'], twilioIndex), {
+      method: 'post',
+      path: '/2010-04-01/Accounts/{AccountSid}/Messages.json',
+    });
+    assert.equal(
+      twilio.resolve(['incomingPhoneNumbers', 'list'], twilioIndex)?.path,
+      '/2010-04-01/Accounts/{AccountSid}/IncomingPhoneNumbers.json',
+    );
+  });
+
+  it('Twilio の fetch / remove は ID 付きパスに解決する', () => {
+    assert.equal(twilio.resolve(['messages', 'fetch'], twilioIndex)?.method, 'get');
+    assert.equal(
+      twilio.resolve(['messages', 'fetch'], twilioIndex)?.path,
+      '/2010-04-01/Accounts/{AccountSid}/Messages/{Sid}.json',
+    );
+    assert.equal(twilio.resolve(['messages', 'remove'], twilioIndex)?.method, 'delete');
+  });
+
+  it('Twilio のアカウント直下リソースも解決する', () => {
+    assert.equal(twilio.resolve(['accounts', 'create'], twilioIndex)?.path, '/2010-04-01/Accounts.json');
+  });
+
+  it('Twilio の未知の動詞は解決しない', () => {
+    assert.equal(twilio.resolve(['messages', 'sendNow'], twilioIndex), undefined);
+  });
+
+  it('Slack はチェーンをドット結合したパスに解決する', () => {
+    assert.deepEqual(slack.resolve(['chat', 'postMessage'], slackIndex), {
+      method: 'post',
+      path: '/chat.postMessage',
+    });
+    assert.equal(slack.resolve(['admin', 'apps', 'approve'], slackIndex)?.path, '/admin.apps.approve');
+  });
+
+  it('Slack は GET のみの操作も解決する', () => {
+    assert.equal(slack.resolve(['conversations', 'list'], slackIndex)?.method, 'get');
+  });
+
+  it('スペックに存在しない呼び出しは解決しない', () => {
+    assert.equal(slack.resolve(['chat', 'deleteScheduledMessage'], slackIndex), undefined);
+    assert.equal(twilio.resolve(['unicorns', 'create'], twilioIndex), undefined);
+  });
+});
+
 describe('scanSource', () => {
   it('import と new から生成したクライアントの呼び出しを検出する', () => {
     const source = `
@@ -140,6 +213,49 @@ describe('scanSource', () => {
       logger.checkout.sessions.create({});
     `;
     assert.deepEqual(scanSource('a.ts', source, index), []);
+  });
+
+  it('Twilio SDK の関数呼び出し形式のクライアント生成を検出する', () => {
+    // twilio-node は `new` ではなく関数呼び出しでクライアントを作る
+    const source = `
+      import twilio from 'twilio';
+      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+
+      export async function sendSms(to: string, body: string) {
+        return client.messages.create({ to, from: '+15551234567', body });
+      }
+    `;
+    const twilioIndex = new OperationIndex({
+      openapi: '3.0.1',
+      paths: { '/2010-04-01/Accounts/{AccountSid}/Messages.json': { post: {} } },
+      components: { schemas: {} },
+    });
+
+    const site = scanSource('sms.ts', source, twilioIndex)[0]!;
+    assert.equal(site.provider, 'twilio');
+    assert.equal(site.operation?.path, '/2010-04-01/Accounts/{AccountSid}/Messages.json');
+    assert.deepEqual(site.passedParams.sort(), ['body', 'from', 'to']);
+  });
+
+  it('Slack SDK の名前付き import からのクライアント生成を検出する', () => {
+    const source = `
+      import { WebClient } from '@slack/web-api';
+      const client = new WebClient(process.env.SLACK_TOKEN);
+
+      export async function notify(channel: string) {
+        return client.chat.postMessage({ channel, text: 'デプロイが完了しました', unfurl_links: false });
+      }
+    `;
+    const slackIndex = new OperationIndex({
+      openapi: '3.0.0',
+      paths: { '/chat.postMessage': { post: {} } },
+      components: { schemas: {} },
+    });
+
+    const site = scanSource('notify.ts', source, slackIndex)[0]!;
+    assert.equal(site.provider, 'slack');
+    assert.equal(site.operation?.path, '/chat.postMessage');
+    assert.ok(site.passedParams.includes('unfurl_links'));
   });
 
   it('OpenAI SDK の呼び出しを検出する', () => {

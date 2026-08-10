@@ -62,14 +62,19 @@ export async function updateRun(
   );
 }
 
-/** Webhook で PR の結末を受け取った際に、対応する実行記録を引くために使う。 */
-export async function findRunByPrUrl(prUrl: string): Promise<RunRow | null> {
+/**
+ * Webhook で PR の結末を受け取った際に、対応する実行記録を引くために使う。
+ *
+ * 同じ差分を再実行すると同じ PR を更新するため、1 つの PR に複数の実行記録が
+ * 紐づきうる。取りこぼさないよう全件返す。
+ */
+export async function findRunsByPrUrl(prUrl: string): Promise<RunRow[]> {
   const { rows } = await pool.query<RunRow>(
     `SELECT id, diff_id, repository, status, pr_url, error, created_at, updated_at
-       FROM api_update_runs WHERE pr_url = $1 ORDER BY created_at DESC LIMIT 1`,
+       FROM api_update_runs WHERE pr_url = $1 ORDER BY created_at DESC`,
     [prUrl],
   );
-  return rows[0] ?? null;
+  return rows;
 }
 
 export async function listRuns(repository?: string, limit = 20): Promise<RunRow[]> {
