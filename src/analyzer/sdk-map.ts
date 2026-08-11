@@ -1,4 +1,5 @@
 import { iterateOperations } from '../detector/ref-index.js';
+import slackGoMap from './slack-go-map.json' with { type: 'json' };
 import type { HttpMethod, OpenApiDocument, OperationRef } from '../detector/types.js';
 
 /**
@@ -257,6 +258,28 @@ export function goIdentifierResolver(options: { maxWords?: number } = {}): PathR
   };
 }
 
+/**
+ * メソッド名 → API のメソッド名の対応表で引く。
+ *
+ * 規則で対応づけられない SDK（Slack の Go SDK など）向け。表は
+ * `npm run generate:slack-go-map` で SDK のソースから生成する。
+ * 引いた結果は必ず実スペックと突き合わせるので、表が古くなっても
+ * 存在しないパスを指すことはない。
+ */
+export function tableResolver(table: Record<string, string>, options: { pathPrefix?: string } = {}): PathResolver {
+  const prefix = options.pathPrefix ?? '';
+
+  return (chain, index) => {
+    const method = chain[chain.length - 1];
+    if (!method) return undefined;
+
+    const endpoint = table[method];
+    if (!endpoint) return undefined;
+
+    return index.lookupAny(`${prefix}/${endpoint}`, ['post', 'get']);
+  };
+}
+
 /** 複数の解決方法を順に試す。SDK のバージョン差を吸収するために使う。 */
 export function firstMatchResolver(...resolvers: PathResolver[]): PathResolver {
   return (chain, index) => {
@@ -299,16 +322,103 @@ export function twilioResolver(options: { pathPrefix: string }): PathResolver {
     const segments = chain.slice(0, -1).map(toPascalCase);
     if (segments.length === 0) return undefined;
 
-    // アカウント配下のリソースと、アカウント直下でないリソースの両方を試す
-    const bases = [`${options.pathPrefix}/Accounts/{}/${segments.join('/')}`, `${options.pathPrefix}/${segments.join('/')}`];
+    return lookupTwilioPath(index, [segments], rule, options.pathPrefix);
+  };
+}
 
-    for (const base of bases) {
+/** リソース名を含むパス候補を順に引く。アカウント配下と直下の両方を試す。 */
+function lookupTwilioPath(
+  index: OperationIndex,
+  candidates: string[][],
+  rule: VerbRule,
+  pathPrefix: string,
+): OperationRef | undefined {
+  for (const segments of candidates) {
+    const joined = segments.join('/');
+    for (const base of [`${pathPrefix}/Accounts/{}/${joined}`, `${pathPrefix}/${joined}`]) {
       const path = rule.target === 'instance' ? `${base}/{}.json` : `${base}.json`;
       const found = index.lookup(path, rule.method);
       if (found) return found;
     }
-    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * 単数形の英単語から複数形の候補を返す。
+ *
+ * 英語の複数形は不規則なので 1 つに決めず、候補を出して実スペックに存在するものを採る。
+ */
+export function pluralCandidates(word: string): string[] {
+  const candidates = [word];
+  if (/[^aeiou]y$/i.test(word)) candidates.push(`${word.slice(0, -1)}ies`);
+  if (/(s|sh|ch|x|z)$/i.test(word)) candidates.push(`${word}es`);
+  candidates.push(`${word}s`);
+  return [...new Set(candidates)];
+}
+
+/** 語の並びの末尾だけを複数形にした候補を返す（`IncomingPhoneNumber` → `IncomingPhoneNumbers`）。 */
+function pluralizeSegment(words: string[]): string[] {
+  const last = words[words.length - 1];
+  if (!last) return [];
+  const prefix = words.slice(0, -1).join('');
+  return pluralCandidates(last).map((plural) => `${prefix}${plural}`);
+}
+
+const TWILIO_GO_VERB_RULES: Record<string, VerbRule> = {
+  Create: { method: 'post', target: 'collection' },
+  Delete: { method: 'delete', target: 'instance' },
+  Fetch: { method: 'get', target: 'instance' },
+  Update: { method: 'post', target: 'instance' },
+  List: { method: 'get', target: 'collection' },
+  Page: { method: 'get', target: 'collection' },
+  Stream: { method: 'get', target: 'collection' },
+};
+
+/**
+ * Twilio の Go SDK 向け。`client.Api.CreateMessage(...)` → `POST /2010-04-01/Accounts/{}/Messages.json`。
+ *
+ * メソッド名は `<動詞><リソース単数形>` の規則になっている。リソースは単数形なので
+ * 複数形の候補を作り、さらに親子リソースの区切り位置も総当たりして、
+ * 実スペックに存在するパスだけを採用する。
+ */
+export function twilioGoResolver(options: { pathPrefix: string }): PathResolver {
+  return (chain, index) => {
+    const method = chain[chain.length - 1];
+    if (!method) return undefined;
+
+    // `CreateMessageWithMetadata` のような派生も同じ操作を指す
+    const name = method.replace(/WithMetadata$/, '');
+    const verb = Object.keys(TWILIO_GO_VERB_RULES).find((v) => name.startsWith(v) && name.length > v.length);
+    if (!verb) return undefined;
+
+    const rule = TWILIO_GO_VERB_RULES[verb] as VerbRule;
+    const words = splitPascalCase(name.slice(verb.length));
+    if (words.length === 0) return undefined;
+
+    return lookupTwilioPath(index, twilioResourceCandidates(words), rule, options.pathPrefix);
   };
+}
+
+/**
+ * `MessageFeedback` が 1 つのリソースか、`Messages/{}/Feedback` の親子かは名前から決まらない。
+ * 区切り位置を総当たりし、それぞれ複数形の候補を展開する。
+ */
+function twilioResourceCandidates(words: string[]): string[][] {
+  const candidates: string[][] = [];
+
+  // 全体で 1 つのリソースとみなす場合
+  for (const segment of pluralizeSegment(words)) candidates.push([segment]);
+
+  // 親子に分ける場合（親 ID がパスに挟まる）
+  for (let i = 1; i < words.length; i += 1) {
+    for (const parent of pluralizeSegment(words.slice(0, i))) {
+      for (const child of pluralizeSegment(words.slice(i))) {
+        candidates.push([parent, '{}', child]);
+      }
+    }
+  }
+  return candidates;
 }
 
 // ---------------------------------------------------------------------------
@@ -385,8 +495,22 @@ export const SDK_CONVENTIONS: SdkConvention[] = [
   },
 
   // --- Go ---
-  // Twilio Go（`client.Api.CreateMessage` + セッター）と Slack Go（`api.PostMessage`）は
-  // 呼び出し名が仕様のパスから離れており規則で対応づけられないため未対応。
+  {
+    provider: 'twilio',
+    language: 'go',
+    modules: ['github.com/twilio/twilio-go'],
+    clientNames: ['twilio', 'client'],
+    // `client.Api.CreateMessage` のように `<動詞><リソース単数形>` の命名
+    resolve: twilioGoResolver({ pathPrefix: '/2010-04-01' }),
+  },
+  {
+    provider: 'slack',
+    language: 'go',
+    modules: ['github.com/slack-go/slack'],
+    clientNames: ['slack', 'api'],
+    // メソッド名が API のパスから導けないため、SDK のソースから生成した表で引く
+    resolve: tableResolver(slackGoMap),
+  },
   {
     provider: 'stripe',
     language: 'go',
