@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 
 import type { OpenApiDocument } from '../detector/types.js';
 import { scanGoFiles } from './scan-go.js';
-import { OperationIndex, splitPascalCase } from './sdk-map.js';
+import { OperationIndex, pluralCandidates, SDK_CONVENTIONS, splitPascalCase } from './sdk-map.js';
 
 /** 解析用バイナリが無い環境（開発マシンなど）ではスキップする。 */
 const extractorAvailable =
@@ -35,6 +35,101 @@ describe('splitPascalCase', () => {
 
   it('連続する大文字を 1 語にまとめる', () => {
     assert.deepEqual(splitPascalCase('HTTPProxy'), ['HTTP', 'Proxy']);
+  });
+});
+
+describe('pluralCandidates', () => {
+  it('英語の複数形の候補を出す', () => {
+    // 1 つに決めず候補を出し、実スペックに存在するものを採る
+    assert.ok(pluralCandidates('Message').includes('Messages'));
+    assert.ok(pluralCandidates('Address').includes('Addresses'));
+    assert.ok(pluralCandidates('Country').includes('Countries'));
+    // 既に複数形・不可算のものはそのままも候補に含める
+    assert.ok(pluralCandidates('Media').includes('Media'));
+  });
+});
+
+describe('Twilio Go / Slack Go の対応づけ', () => {
+  const twilioIndex = new OperationIndex({
+    openapi: '3.0.1',
+    paths: {
+      '/2010-04-01/Accounts.json': { post: {} },
+      '/2010-04-01/Accounts/{AccountSid}/Messages.json': { post: {}, get: {} },
+      '/2010-04-01/Accounts/{AccountSid}/Messages/{Sid}.json': { get: {}, delete: {} },
+      '/2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Feedback.json': { post: {} },
+      '/2010-04-01/Accounts/{AccountSid}/IncomingPhoneNumbers.json': { get: {} },
+      '/2010-04-01/Accounts/{AccountSid}/Addresses.json': { get: {} },
+    },
+    components: { schemas: {} },
+  });
+  const slackIndex = new OperationIndex({
+    openapi: '3.0.0',
+    paths: { '/chat.postMessage': { post: {} }, '/users.info': { get: {} } },
+    components: { schemas: {} },
+  });
+
+  const twilioGo = SDK_CONVENTIONS.find((c) => c.language === 'go' && c.provider === 'twilio')!;
+  const slackGo = SDK_CONVENTIONS.find((c) => c.language === 'go' && c.provider === 'slack')!;
+
+  it('動詞とリソース単数形からパスを組み立てる', () => {
+    assert.deepEqual(twilioGo.resolve(['Api', 'CreateMessage'], twilioIndex), {
+      method: 'post',
+      path: '/2010-04-01/Accounts/{AccountSid}/Messages.json',
+    });
+    assert.equal(
+      twilioGo.resolve(['Api', 'FetchMessage'], twilioIndex)?.path,
+      '/2010-04-01/Accounts/{AccountSid}/Messages/{Sid}.json',
+    );
+    assert.equal(twilioGo.resolve(['Api', 'DeleteMessage'], twilioIndex)?.method, 'delete');
+  });
+
+  it('不規則な複数形も実スペックで判別する', () => {
+    assert.equal(
+      twilioGo.resolve(['Api', 'ListAddress'], twilioIndex)?.path,
+      '/2010-04-01/Accounts/{AccountSid}/Addresses.json',
+    );
+    assert.equal(
+      twilioGo.resolve(['Api', 'ListIncomingPhoneNumber'], twilioIndex)?.path,
+      '/2010-04-01/Accounts/{AccountSid}/IncomingPhoneNumbers.json',
+    );
+  });
+
+  it('親子リソースの区切りを実スペックで判別する', () => {
+    // `MessageFeedback` が 1 リソースか親子かは名前から決まらない
+    assert.equal(
+      twilioGo.resolve(['Api', 'CreateMessageFeedback'], twilioIndex)?.path,
+      '/2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Feedback.json',
+    );
+  });
+
+  it('WithMetadata 派生も同じ操作として扱う', () => {
+    assert.equal(
+      twilioGo.resolve(['Api', 'CreateMessageWithMetadata'], twilioIndex)?.path,
+      '/2010-04-01/Accounts/{AccountSid}/Messages.json',
+    );
+  });
+
+  it('アカウント直下のリソースも解決する', () => {
+    assert.equal(twilioGo.resolve(['Api', 'CreateAccount'], twilioIndex)?.path, '/2010-04-01/Accounts.json');
+  });
+
+  it('未知の動詞やスペックに無いリソースは解決しない', () => {
+    assert.equal(twilioGo.resolve(['Api', 'TeleportMessage'], twilioIndex), undefined);
+    assert.equal(twilioGo.resolve(['Api', 'CreateUnicorn'], twilioIndex), undefined);
+  });
+
+  it('Slack Go は生成した対応表で引く', () => {
+    assert.deepEqual(slackGo.resolve(['PostMessage'], slackIndex), { method: 'post', path: '/chat.postMessage' });
+    assert.equal(slackGo.resolve(['GetUserInfoContext'], slackIndex)?.path, '/users.info');
+  });
+
+  it('実行時にエンドポイントが決まるメソッドは対応表に含めない', () => {
+    // `SendMessage` はオプション次第で chat.postMessage / chat.update いずれにもなる
+    assert.equal(slackGo.resolve(['SendMessage'], slackIndex), undefined);
+  });
+
+  it('対応表に無いメソッドは解決しない', () => {
+    assert.equal(slackGo.resolve(['DoSomethingUnknown'], slackIndex), undefined);
   });
 });
 

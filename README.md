@@ -42,6 +42,8 @@ curl http://localhost:3000/health
 | Twilio | OpenAPI 3 | `client.messages.create` → `/2010-04-01/Accounts/{AccountSid}/Messages.json` |
 | Slack | **Swagger 2.0** | `client.chat.postMessage` → `/chat.postMessage` |
 
+対応言語は TypeScript / JavaScript・Python・Go。
+
 対応づけの規則は SDK ごとに根本的に異なるため、[src/analyzer/sdk-map.ts](src/analyzer/sdk-map.ts) で
 プロバイダごとに解決関数を持たせている。いずれも推測を含むため、生成した候補は
 **必ず実スペックのパスと突き合わせて検証**する。
@@ -176,13 +178,45 @@ params := &stripe.CustomerCreateParams{...}  // 変数経由で渡す形にも�
 | Go | `sc.V1Customers.Create` | `POST /v1/customers` |
 | Go | `sc.V1PaymentIntents.Create` | `POST /v1/payment_intents` |
 | Go | `client.Chat.Completions.New` | `POST /chat/completions` |
+| Go | `client.Api.CreateMessage` (Twilio) | `POST /2010-04-01/Accounts/{AccountSid}/Messages.json` |
+| Go | `api.PostMessage` (Slack) | `POST /chat.postMessage` |
 
-Go はパスの区切りが 1 つの識別子に連結されており、`V1PaymentIntents` は
-`/v1/payment/intents` とも `/v1/payment_intents` とも読める。語の区切り方を総当たりし、
-**実スペックに存在するものだけを採用**することで判別している。
+Go は SDK ごとに命名が大きく異なるため、3 通りの解決方法を使い分けている。
 
-> **Go の対象外**: Twilio Go（`client.Api.CreateMessage` + セッター）と
-> Slack Go（`api.PostMessage`）は呼び出し名が仕様のパスから離れており、規則で対応づけられない。
+**1. 連結された識別子の分解**（Stripe / OpenAI）
+
+`V1PaymentIntents` は `/v1/payment/intents` とも `/v1/payment_intents` とも読める。
+語の区切り方を総当たりし、**実スペックに存在するものだけを採用**する。
+
+**2. 動詞＋リソース単数形**（Twilio）
+
+`CreateMessage` → 動詞 `Create` ＋ リソース `Message`。英語の複数形は不規則なので
+候補（`Messages` / `Addresses` / `Countries`）を出して実スペックで判別する。
+`MessageFeedback` が 1 リソースか `Messages/{}/Feedback` の親子かも同様に総当たりで決める。
+
+**3. 生成した対応表**（Slack）
+
+Slack の Go SDK はメソッド名が API のパスから導けない。
+
+```
+GetUserByEmail  → users.lookupByEmail
+GetFiles        → files.list
+UploadFile      → files.upload
+```
+
+手書きせず、SDK のソースに埋め込まれた公式ドキュメントの URL から生成する
+（[generate-slack-go-map.ts](src/scripts/generate-slack-go-map.ts)、265 件）。
+
+```bash
+npm run generate:slack-go-map   # SDK 更新時に再実行
+```
+
+関数本体の文字列リテラルではなく URL を根拠にするのは、`PostMessage` のように
+内部で共通処理へ委譲する関数だと本体にエンドポイントが現れず、
+近くの無関係なリテラルを誤って拾ってしまうため。
+
+`SendMessage` のように**実行時のオプションでエンドポイントが変わる**メソッドは、
+1 つに対応づけられないので表から除外している。誤った対応は誤検知 PR を生むため。
 
 ### 命名規則の吸収
 
@@ -505,6 +539,7 @@ docker build --target prod -t api-update:prod .
     │   ├── scan-python.ts  #   Python の AST 走査（外部プロセス）
     │   ├── scan-go.ts      #   Go の AST 走査（外部プロセス）
     │   ├── extract_python_calls.py # Python 側の抽出器
+    │   ├── slack-go-map.json # Slack Go の対応表（生成物）
     │   ├── sdk-map.ts      #   呼び出しチェーン → OpenAPI 操作の対応づけ
     │   ├── correlate.ts    #   破壊的変更と呼び出し箇所の突合
     │   ├── llm-judge.ts    #   Claude による影響有無の判定
