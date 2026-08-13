@@ -241,12 +241,28 @@ npm run generate:slack-go-map   # SDK 更新時に再実行
 確信が持てない場合は `affected` ではなく `uncertain` を選ばせ、不要な PR を抑制している。
 `ANTHROPIC_API_KEY` 未設定時は判定をスキップし、全件 `uncertain` として記録する。
 
+判定には**呼び出し箇所の抜粋ではなくファイル全体**（行番号つき）を渡す。
+`create(buildParams(...))` のようにパラメータを別の関数で組み立てている場合、
+抜粋だけでは判断材料が足りず、実 API での検証でも全件 `uncertain` になったため。
+同じファイルを参照する候補が複数あってもファイルは 1 度だけ載せる。
+
 ### 動作確認
 
 ```bash
 docker compose cp ./path/to/target-repo app:/tmp/target
 docker compose exec app npm run analyze -- <diffId> /tmp/target owner/repo
 ```
+
+LLM 連携は 2 通りで確認できる。
+
+```bash
+npm run verify:llm        # モック API（課金なし）。送信内容・受信処理・拒否時の挙動
+npm run verify:llm:live   # 実 API を 1 リクエスト（数円）。パラメータの受理を確認
+```
+
+実行ごとのトークン使用量はログに出る。実測では通し検証 1 回（判定 1 + 修正 3 試行）で
+**約 0.54 ドル（81 円）** だった。費用の大半は出力（思考トークン）で、入力は
+プロンプトキャッシュが効いて 1 回 2000 トークン前後に収まる。
 
 ## ③ AI コード自動修正 & テスト検証モジュール (Fix Agent)
 

@@ -171,7 +171,18 @@ nextResponse = {
   }),
 };
 
-const judgements = await judgeImpact([{ change, callSite, match: 'direct' }], log);
+const sources = new Map([
+  [
+    callSite.file,
+    [
+      'export async function refund(id, jpy) {',
+      '  return stripe.terminal.refunds.create({ charge: id, amount: jpy });',
+      '}',
+      '',
+    ].join('\n'),
+  ],
+]);
+const judgements = await judgeImpact([{ change, callSite, match: 'direct' }], sources, log);
 console.log('  受け取った判定:', JSON.stringify(judgements, null, 2).split('\n').slice(0, 8).join('\n  '));
 
 // --- ③ 修正案生成 ---------------------------------------------------------
@@ -212,7 +223,7 @@ console.log('  編集:', edits.edits.map((e) => `${e.file} — ${e.description}`
 // --- 拒否時の挙動 ---------------------------------------------------------
 console.log('\n=== 安全性分類器による拒否時の挙動（② のみ確認） ===');
 nextResponse = { refusal: 'cyber' };
-const refused = await judgeImpact([{ change, callSite, match: 'direct' }], log);
+const refused = await judgeImpact([{ change, callSite, match: 'direct' }], sources, log);
 console.log('  判定:', refused[0]?.verdict, '/', refused[0]?.reason);
 
 // --- 送信内容の検証 -------------------------------------------------------
