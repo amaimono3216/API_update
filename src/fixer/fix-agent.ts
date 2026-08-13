@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 
+import { logUsage } from '../analyzer/llm-judge.js';
 import { env } from '../config/env.js';
 import type { BreakingChange } from '../detector/types.js';
 import type { ImpactJudgement } from '../analyzer/types.js';
@@ -91,6 +92,7 @@ export async function requestEdits(
   });
 
   const message = await stream.finalMessage();
+  logUsage(log, message.usage, 'fix');
 
   if (message.stop_reason === 'refusal') {
     throw new Error(`LLM が修正を拒否しました (${message.stop_details?.category ?? '理由不明'})`);

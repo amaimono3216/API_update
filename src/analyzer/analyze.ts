@@ -46,7 +46,9 @@ export async function analyze(
       '静的解析が完了しました',
     );
 
-    const judgements = await judgeImpact(candidates, log);
+    // 判定にはファイル全体を渡す（パラメータを別関数で組み立てている場合に必要）
+    const sources = new Map(files.map((f) => [f.path, f.content]));
+    const judgements = await judgeImpact(candidates, sources, log);
     const affected = judgements.filter((j) => j.verdict === 'affected');
 
     const result: AnalysisResult = {
