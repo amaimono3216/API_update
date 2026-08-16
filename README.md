@@ -1,9 +1,101 @@
 # API_update
 
-Stripe / OpenAI の公式 API アップデート（OpenAPI 仕様・Changelog）を監視し、破壊的変更を検知したら
-対象リポジトリのコードを自動修正して、テスト通過済みの Pull Request を作成する GitHub App。
+**Stripe / OpenAI / Twilio / Slack の API 破壊的変更を検知し、影響を受けるコードを自動修正して Pull Request を出す GitHub App。**
 
-設計の詳細は [.claude/CLAUDE.md](.claude/CLAUDE.md) を参照。
+---
+
+## 解こうとしている問題
+
+外部 API は予告なく壊れる。仕様変更のアナウンスは流れてくるが、
+**「自分のコードのどこが壊れるのか」は誰も教えてくれない。**
+
+結果、多くのチームはこうなる。
+
+- Changelog を読む人がいない → 本番で初めて壊れたことに気づく
+- 読んでも、全リポジトリを grep して影響を確認する時間がない
+- 影響がないことの確認だけで半日溶ける
+
+このシステムは、**仕様の差分とコードの AST を突き合わせて「本当に壊れる箇所」だけを特定し**、
+修正案を作り、テストを通してから PR にする。
+
+### 動作イメージ
+
+Stripe が Checkout Session の `line_items` から `amount` / `name` / `currency` を削除した場合:
+
+```diff
+  const session = await stripe.checkout.sessions.create({
+    line_items: [
+      {
+-       name: 'Pasha photo',
+-       amount: 500,
+-       currency: 'usd',
+        quantity: 1,
++       price: 'price_xxx',
+      },
+    ],
+  });
+```
+
+この修正と、下記を含む PR が自動で作られる。
+
+- どの仕様変更を根拠にしたか（公式 Changelog へのリンク付き）
+- どのファイルの何行目を、なぜ変えたのか
+- テストが通ったかどうか（`12/12 passed` など実行結果）
+- **自動では判断できなかった箇所の一覧**（レビュアーが見るべき場所）
+
+## 実績
+
+実在の OSS リポジトリ 9 個・4 プロバイダ・4 言語に対し、
+**実際に起きた過去の仕様変更**を当てて精度を測っている（[再現テスト](#backtest)）。
+
+| 指標 | 結果 |
+| --- | --- |
+| ケース数 | 32（採点対象 21） |
+| 走査したファイル | 767 |
+| 検出した SDK 呼び出し | 372 箇所 |
+| **誤検知（不要な PR の原因）** | **0 件** |
+| **見逃し** | **0 件** |
+| 壊れる箇所の特定 | 2 / 2 |
+| 壊れない箇所の除外 | 40 / 40 |
+
+「変更された項目を実際に渡している」という紛らわしい一致が 36 件あるなかで、
+本当に壊れる 2 件だけを選び出せている。
+
+## 全体の流れ
+
+```mermaid
+flowchart TD
+    D1["① 監視・検知<br/>公式 OpenAPI 仕様を毎日取得し、前回分と比較して<br/>破壊的変更を抽出する"]
+    A1["② 影響範囲の特定<br/>対象リポジトリを AST 走査して SDK 呼び出しを特定し、<br/>変更と突き合わせて LLM が影響の有無を判定する"]
+    F1["③ 自動修正・テスト<br/>作業ブランチで LLM が修正し、隔離コンテナでテスト。<br/>失敗したらエラーを渡して再修正（最大 3 回）"]
+    P1["④ PR 生成・通知<br/>根拠・修正内容・テスト結果・要確認箇所を<br/>書いた PR を作成する"]
+    STOP["ここで終了<br/>（PR は作らない）"]
+
+    D1 -->|破壊的変更あり| A1
+    A1 -->|影響あり| F1
+    A1 -->|影響なし| STOP
+    F1 -->|テスト通過| P1
+```
+
+各モジュールは独立して起動でき、途中で止めても結果は DB に残る。
+**影響がなければ ② で打ち切る**のがこの設計の要で、無駄な PR を出さないことを最優先にしている。
+
+## 目次
+
+| 節 | 内容 |
+| --- | --- |
+| [セットアップ](#セットアップ) | Docker だけで動かす |
+| [① 監視・検知](#detector) | 仕様の取得と差分エンジン |
+| [② 影響範囲の特定](#analyzer) | AST 走査と SDK 対応づけ |
+| [③ 自動修正・テスト](#fixer) | 修正ループとサンドボックス |
+| [④ PR 生成](#pr) | PR 概要欄と送信 |
+| [Webhook / 通知](#webhook-受信) | PR のその後を追跡する |
+| [HTTP エンドポイント](#endpoints) | API リファレンス |
+| [再現テスト](#backtest) | 精度の測り方と結果 |
+| [制限と既知の課題](#制限と既知の課題) | できないこと |
+| [環境変数](#環境変数) | 設定一覧 |
+
+設計方針の原文は [.claude/CLAUDE.md](.claude/CLAUDE.md)。
 
 ## 技術スタック
 
@@ -17,17 +109,42 @@ Stripe / OpenAI の公式 API アップデート（OpenAPI 仕様・Changelog）
 
 ## セットアップ
 
+必要なのは **Docker と Docker Compose だけ**（Node.js / Python / Go はイメージに含まれる）。
+
 ```bash
-# .env を用意する（下記「環境変数」を参照）
+git clone https://github.com/<your-account>/API_update.git
+cd API_update
+
+# 最小構成の .env を作る（他の設定は「環境変数」を参照）
+cat > .env <<'EOF'
+DATABASE_URL=postgres://api_update:api_update@db:5432/api_update
+REDIS_URL=redis://redis:6379
+NODE_ENV=development
+EOF
+
 docker compose up -d --build
 curl http://localhost:3000/health
 ```
 
-`/health` は Postgres と Redis への疎通を含めて検証し、正常時は下記を返す。
+正常なら次が返る。
 
 ```json
 {"status":"ok","uptime":6,"dependencies":{"postgres":"ok","redis":"ok"}}
 ```
+
+この状態で **① 監視・検知は動く**（無料）。
+② の影響判定と ③ の自動修正には `ANTHROPIC_API_KEY`、
+④ の PR 送信には GitHub App の認証情報が要る。未設定でも該当機能をスキップして動作する。
+
+```bash
+# 監視対象の仕様を初回取得（ベースライン作成）
+curl -X POST http://localhost:3000/detect/stripe
+
+# 精度の再現テストを回す（LLM を使わないので無料）
+docker compose run --rm --no-deps app npx tsx src/scripts/backtest.ts
+```
+
+<a id="detector"></a>
 
 ## ① 監視・検知モジュール (Update Detector)
 
@@ -55,11 +172,12 @@ OpenAPI 3 相当へ正規化する（`definitions` → `components.schemas`、`i
 > **対象外**: AWS は OpenAPI ではなく Smithy/botocore 形式（`operations` / `shapes`）のため別エンジンが必要。
 > Shopify は REST が 2024/10 にレガシー化し GraphQL 移行中のため、追随対象としての価値が薄い。
 
-```
-fetchSpec ──> saveSnapshot ──> diffOpenApi ──> saveDiff ──> (破壊的変更あれば ② へ)
-   取得         SHA-256 で        新旧比較        永続化
-              同一なら再保存せず
-```
+| 手順 | 処理 | 補足 |
+| --- | --- | --- |
+| 1 | `fetchSpec` | 公式スペックを取得・パース |
+| 2 | `saveSnapshot` | SHA-256 が前回と同一なら再保存しない |
+| 3 | `diffOpenApi` | 新旧を比較して破壊的変更を抽出 |
+| 4 | `saveDiff` | 差分を永続化。破壊的変更があれば ② へ |
 
 - スケジュール: `DETECT_CRON`（既定 毎日 03:00 JST）。`DETECT_ENABLED=false` で無効化。
 - 二重起動は Redis の分散ロックで防止する（cron と手動実行が重なった場合など）。
@@ -80,6 +198,13 @@ fetchSpec ──> saveSnapshot ──> diffOpenApi ──> saveDiff ──> (破
 | 必須の解除 | 互換 | breaking |
 | enum 値の削除 | breaking | warning |
 | enum 値の追加 | 互換 | warning |
+| enum → 素の型（制約の解除） | **互換** | warning |
+| 素の型 → enum（制約の追加） | breaking | warning |
+
+最後の 2 行は再現テストで見つけた誤検知への対応。Twilio が `UsageCategory` を
+enum から `string` に緩めたとき、単純に「型が変わった」と扱うと破壊的変更になり
+不要な PR が出る。実際には既存の値はそのまま通るので、`$ref` の参照先を解決して
+**基底型が同じなら緩和と判定する**ようにしている。
 
 `$ref` は展開せず、同一参照なら等価とみなして打ち切る（循環参照とスキーマ爆発の回避）。
 参照先の変更は `components.schemas` の差分として検出し、
@@ -105,15 +230,20 @@ docker compose exec app npm run seed:baseline -- \
 curl -X POST http://localhost:3000/detect/stripe
 ```
 
+<a id="analyzer"></a>
+
 ## ② 影響範囲特定モジュール (Impact Analyzer)
 
 検知した破壊的変更が、対象リポジトリのコードに実際の影響を与えるかを判定する。
 影響がなければここで終了し、③ 以降を起動しない（無駄な PR を防ぐ）。
 
-```
-リポジトリ走査 ──> AST スキャン ──> 破壊的変更と突合 ──> LLM 判定 ──> 実行記録
-                  SDK 呼び出し抽出   操作 / パラメータ    影響有無の確定
-```
+| 手順 | 処理 | 何をするか |
+| --- | --- | --- |
+| 1 | リポジトリ走査 | 対象言語のソースファイルを列挙 |
+| 2 | AST スキャン | SDK 呼び出しと、渡しているパラメータ名を抽出 |
+| 3 | 突合 | 破壊的変更と、同じ操作を呼んでいる箇所を対応づけ |
+| 4 | LLM 判定 | 影響あり / なし / 判断できず を確定 |
+| 5 | 実行記録 | 判定結果と理由を DB に保存 |
 
 ### コード解析
 
@@ -144,19 +274,26 @@ Go の解析器はビルド時にのみ Go ツールチェーンを使い、実�
 ```ts
 const stripe = new Stripe(key);              // import + new
 const stripe = require('stripe')(key);       // CommonJS
+const { App } = require('@slack/bolt');      // 分割代入
 this.stripe = new Stripe(key);               // クラスのプロパティ
 import { stripe } from './lib/stripe';       // 別ファイル生成（名前から推定）
+
+app.event('team_join', async ({ client }) => {   // Bolt はリスナー引数で
+  await client.chat.postMessage({ ... });        // クライアントを渡してくる
+});
 ```
 
 ```python
 client = StripeClient(key)                   # from stripe import StripeClient
 client = Client(sid, token)                  # from twilio.rest import Client
 stripe.checkout.sessions.create(...)         # import stripe（モジュール直接）
+stripe.PaymentIntent.create(...)             # 旧来のクラス記法
 ```
 
 ```go
 sc := stripe.NewClient(apiKey)               // github.com/stripe/stripe-go
 client := openai.NewClient()                 // github.com/openai/openai-go
+session.New(params)                          // リソースが import パスにある形
 params := &stripe.CustomerCreateParams{...}  // 変数経由で渡す形にも対応
 ```
 
@@ -171,30 +308,41 @@ params := &stripe.CustomerCreateParams{...}  // 変数経由で渡す形にも�
 | TS | `stripe.charges.capture` | `POST /v1/charges/{charge}/capture` |
 | TS | `openai.beta.threads.messages.create` | `POST /threads/{thread_id}/messages` |
 | TS | `client.chat.postMessage` | `POST /chat.postMessage` |
+| TS | `app.client.chat.postMessage` (Bolt) | `POST /chat.postMessage`（間の `client` を読み飛ばす） |
 | TS | `client.messages.create` (Twilio) | `POST /2010-04-01/Accounts/{AccountSid}/Messages.json` |
 | Py | `client.v1.customers.create` | `POST /v1/customers` |
+| Py | `stripe.PaymentIntent.create` | `POST /v1/payment_intents`（旧クラス記法） |
 | Py | `client.chat_postMessage` | `POST /chat.postMessage`（アンダースコア記法） |
 | Py | `client.messages.create` (Twilio) | `POST /2010-04-01/Accounts/{AccountSid}/Messages.json` |
 | Go | `sc.V1Customers.Create` | `POST /v1/customers` |
 | Go | `sc.V1PaymentIntents.Create` | `POST /v1/payment_intents` |
+| Go | `session.New` (パッケージ分割形式) | `POST /v1/checkout/sessions` |
 | Go | `client.Chat.Completions.New` | `POST /chat/completions` |
 | Go | `client.Api.CreateMessage` (Twilio) | `POST /2010-04-01/Accounts/{AccountSid}/Messages.json` |
 | Go | `api.PostMessage` (Slack) | `POST /chat.postMessage` |
 
-Go は SDK ごとに命名が大きく異なるため、3 通りの解決方法を使い分けている。
+Go は SDK ごとに命名が大きく異なるため、4 通りの解決方法を使い分けている。
 
 **1. 連結された識別子の分解**（Stripe / OpenAI）
 
 `V1PaymentIntents` は `/v1/payment/intents` とも `/v1/payment_intents` とも読める。
 語の区切り方を総当たりし、**実スペックに存在するものだけを採用**する。
 
-**2. 動詞＋リソース単数形**（Twilio）
+**2. import パスからの復元**（旧来の Stripe）
+
+stripe-go はリソースごとにパッケージが分かれており、呼び出し側には
+`session.New(params)` としか現れない。リソース名は import パス
+（`.../v84/checkout/session`）にしかないため、そこから復元する。
+パッケージ名には区切り文字が無いので（`paymentintent`）、
+区切りを無視した突き合わせで `/v1/payment_intents` に対応づける。
+
+**3. 動詞＋リソース単数形**（Twilio）
 
 `CreateMessage` → 動詞 `Create` ＋ リソース `Message`。英語の複数形は不規則なので
 候補（`Messages` / `Addresses` / `Countries`）を出して実スペックで判別する。
 `MessageFeedback` が 1 リソースか `Messages/{}/Feedback` の親子かも同様に総当たりで決める。
 
-**3. 生成した対応表**（Slack）
+**4. 生成した対応表**（Slack）
 
 Slack の Go SDK はメソッド名が API のパスから導けない。
 
@@ -264,16 +412,22 @@ npm run verify:llm:live   # 実 API を 1 リクエスト（数円）。パラ�
 **約 0.54 ドル（81 円）** だった。費用の大半は出力（思考トークン）で、入力は
 プロンプトキャッシュが効いて 1 回 2000 トークン前後に収まる。
 
+<a id="fixer"></a>
+
 ## ③ AI コード自動修正 & テスト検証モジュール (Fix Agent)
 
 ② が「影響あり」と判定した箇所を、作業ブランチ上で修正しテストで検証する。
 
+```mermaid
+flowchart LR
+    W["作業ブランチ作成<br/>(git clone)"] --> G["修正案生成<br/>(LLM)"]
+    G --> E["編集を適用<br/>(完全一致置換)"]
+    E --> T{"テスト実行"}
+    T -->|成功| C["コミットして diff を取り出す"]
+    T -->|失敗| G
 ```
-作業ブランチ作成 ──> 修正案生成 ──> 編集を適用 ──> テスト実行 ──┬─ 成功 ─> コミット・diff
-   （git clone）      （LLM）      （完全一致置換）              │
-                          ↑                                     └─ 失敗 ─> フィードバックして再修正
-                          └──────── エラーログ ────────────────────  （最大 3 回）
-```
+
+テストが失敗したらエラーログを LLM に渡して再修正する（最大 3 回）。
 
 ### 作業コピー
 
@@ -356,6 +510,8 @@ docker compose cp ./path/to/target-repo app:/tmp/target
 docker compose exec app npm run fix -- <diffId> /tmp/target owner/repo
 ```
 
+<a id="pr"></a>
+
 ## ④ PR 自動生成 & 信頼性表示モジュール (PR Generator)
 
 ①〜③ の結果を突き合わせて PR の内容を組み立て、GitHub に送信する。
@@ -380,6 +536,56 @@ docker compose exec app npm run fix -- <diffId> /tmp/target owner/repo
 
 を明示する。件数は [src/pr/test-summary.ts](src/pr/test-summary.ts) が
 node:test / Jest / Vitest / pytest / Mocha の出力から抽出する。
+
+<details><summary>生成される PR 概要欄の例</summary>
+
+```markdown
+破壊的変更（Breaking Change）を検知したため、自動修正 PR を作成しました。
+
+> 🤖 このPRは自動生成されています。マージ前に内容をご確認ください。
+
+## 1. API 仕様の変更概要
+
+- **対象サービス**: Stripe API (`2020-08-27` → `2021-08-27`)
+- **公式情報源**: [Stripe API Changelog](https://docs.stripe.com/changelog)
+- **検知日時**: 2026/08/16 03:00 JST
+
+| 変更項目 | 変更前 (Before) | 変更後 (After) |
+| --- | --- | --- |
+| `POST /v1/checkout/sessions` の `line_items.[].amount` | `integer` | （削除） |
+| `POST /v1/checkout/sessions` の `line_items.[].name` | `string` | （削除） |
+
+## 2. 影響を受けるファイルと修正内容
+
+### `server.js` (L39-L47)
+
+- line_items の amount/name/currency を price 参照に置き換え
+
+<details><summary>影響と判定した理由</summary>
+
+- **L39**: line_items に amount と name を直接渡しており、削除された項目に依存している
+
+</details>
+
+## 3. テスト実行結果
+
+- **既存のユニットテスト**: PASSED (12/12 passed)
+- **実行コマンド**: `npm test`
+
+## 4. この修正の信頼性について
+
+- **修正の試行回数**: 2 回（テスト失敗を受けて再修正しています）
+- **検出した API 呼び出し**: 2 箇所（走査ファイル 1 件）
+- **修正が必要と判定した箇所**: 1 箇所
+
+### 手動での確認をおすすめする箇所（1 件）
+
+影響の有無を自動で判断できなかったため、この PR では変更していません。
+
+- `server.js:58` — レスポンスの受け渡し先が特定できず、影響の有無を判断できませんでした
+```
+
+</details>
 
 ### 送信
 
@@ -411,8 +617,8 @@ API バージョンが変わらないまま仕様だけ更新されるプロバ�
 [`shouldForcePush()`](src/pr/publisher.ts) で **`api-update/` 配下のブランチに限定**しており、
 `main` や利用者のブランチには決して force push しない。
 
-> **未検証**: `GitHubPublisher` は認証情報が未設定のため、実際の GitHub API に対する
-> 動作確認ができていない。型チェックとビルドのみ通した状態。
+実 GitHub App で通しの動作確認済み。PR の作成 → マージ → Webhook 受信 →
+実行記録の更新 → 通知までと、同一差分の再実行による force push・既存 PR の更新を確認している。
 
 ### 動作確認
 
@@ -425,10 +631,8 @@ docker compose exec app npm run pipeline -- <diffId> /tmp/target owner/repo
 
 GitHub App からの Webhook を `POST /webhooks/github` で受ける。
 
-```
-署名検証 ──> 配信 ID で重複排除 ──> イベント処理 ──> 通知
-（HMAC）      （再送対策）
-```
+受信したリクエストは **署名検証（HMAC）→ 配信 ID による重複排除（再送対策）→ イベント処理 → 通知**
+の順に処理する。
 
 ### 署名検証
 
@@ -476,13 +680,15 @@ GitHub は配信失敗時に**同じ `X-GitHub-Delivery` で再送する**ため
 変更なし・後方互換の変更は通知しない。通知が多いと読まれなくなり、
 肝心の破壊的変更を見落とすため。
 
-### エンドポイント
+<a id="endpoints"></a>
+
+## HTTP エンドポイント一覧
 
 | メソッド | パス | 用途 |
 | --- | --- | --- |
 | `GET` | `/health` | Postgres / Redis 込みの死活確認 |
 | `GET` | `/providers` | 監視対象と最新スナップショット |
-| `POST` | `/detect/:provider` | ① 検知の手動実行（`stripe` / `openai`） |
+| `POST` | `/detect/:provider` | ① 検知の手動実行（`stripe` / `openai` / `twilio` / `slack`） |
 | `GET` | `/diffs/:provider` | 差分の履歴 |
 | `GET` | `/diffs/:provider/latest` | 直近の差分（変更一覧つき） |
 | `POST` | `/analyze` | ② 影響範囲の特定（`{diffId, path, name}`） |
@@ -491,6 +697,8 @@ GitHub は配信失敗時に**同じ `X-GitHub-Delivery` で再送する**ため
 | `GET` | `/runs` | 実行記録の一覧（`?repository=owner/repo`） |
 | `POST` | `/webhooks/github` | GitHub Webhook の受信口 |
 | `GET` | `/webhooks/deliveries` | 受信した Webhook の履歴 |
+
+<a id="backtest"></a>
 
 ## 再現テスト（バックテスト）
 
@@ -510,6 +718,51 @@ Go の解析器 (`go-extract`) はイメージにしか無いため、Go を含�
 ```bash
 docker compose run --rm --no-deps app npx tsx src/scripts/backtest.ts
 ```
+
+### 結果（32 ケース）
+
+```
+実行: 32 / 32 ケース
+走査 767 ファイル / SDK 呼び出し 372 箇所 / 影響候補 218 件（うち direct 36）
+
+採点対象 21 ケース: 正解 2 / 誤検知 0 / 見逃し 0 / 正しく除外 40
+  適合率（誤検知の少なさ）: 100.0%
+  再現率（見逃しの少なさ）: 100.0%
+  不要な PR の回避: 40 / 40
+```
+
+対象にした実在リポジトリ:
+
+| プロバイダ | ケース | リポジトリ |
+| --- | ---: | --- |
+| Stripe | 22 | `stripe-samples/accept-a-payment`, `checkout-one-time-payments`, `subscription-use-cases` |
+| OpenAI | 3 | `openai/openai-quickstart-node`, `openai-quickstart-python` |
+| Twilio | 4 | `TwilioDevEd/api-snippets`（587 ファイル） |
+| Slack | 3 | `slackapi/bolt-js`, `bolt-python`, `python-slack-sdk` |
+
+**壊れるケース（正解 2）**
+
+| ケース | 変更 | 判定 |
+| --- | --- | --- |
+| 2019 年当時の Checkout サンプル (Node) | `line_items[].amount / name / currency` 削除 | 影響あり ✓ |
+| 同 (Python, 旧クラス記法) | 同上 | 影響あり ✓ |
+
+**壊れないケース（正しく除外 40）** — いずれも「同じ操作は呼んでいるが、
+変更された項目には触れていない」紛らわしい組み合わせ。代表的なもの:
+
+| ケース | 変更 | なぜ影響なしか |
+| --- | --- | --- |
+| Twilio: Usage Records / Triggers | `UsageCategory` が enum → string | 型の緩和。既存の値はそのまま通る |
+| Slack: `chat.*` の必須化・型修正 | `thread_ts` が number → string 他 19 件が direct 一致 | コードは既に文字列を渡している |
+| Stripe: 共有スキーマ経由の `iin` 削除 | `POST /v1/customers` に波及 | 渡してもいないし読んでもいない |
+| OpenAI: `service_tier` 削除 | `POST /chat/completions` | サンプルは渡していない |
+
+誤検知＝無駄な PR がこのシステムの信頼を最も損なうため、実質的な測定対象はここ。
+`direct` 一致（変更された項目を実際に渡している）が 36 件あるなかで、
+本当に壊れる 2 件だけを選び出せている。
+
+LLM 判定を含む 1 回の全ケース実行は 入力 154k / 出力 22.5k トークン、**約 $2**。
+静的解析のみなら無料で、候補の絞り込み（372 呼び出し → 218 候補）まで確認できる。
 
 ### ケース定義
 
@@ -566,8 +819,15 @@ docker compose up -d --build
 
 ```bash
 npm run typecheck
-npm test          # 差分エンジンのユニットテスト
+npm test          # ユニットテスト 194 件
 npm run build
+```
+
+Python / Go の解析器を使うテストは、それらが無いホストでは自動的にスキップされる。
+全件を走らせるならコンテナで実行する。
+
+```bash
+docker compose run --rm --no-deps app npm test
 ```
 
 ## 本番イメージ
@@ -644,6 +904,23 @@ docker build --target prod -t api-update:prod .
         └── dispatch.ts     #   通知すべき出来事の判定
 ```
 
+## 制限と既知の課題
+
+できないことを先に書いておく。
+
+| 項目 | 現状 |
+| --- | --- |
+| 監視対象 | OpenAPI 3 / Swagger 2.0 で仕様を公開しているサービスのみ。AWS（Smithy 形式）と Shopify（GraphQL 移行中）は対象外 |
+| 対応言語 | TypeScript / JavaScript・Python・Go。他言語のファイルは走査対象から外れる |
+| 大きな差分 | 数百件の破壊的変更を一度に処理すると候補が膨らみ、LLM の判定コストが上がる。毎日実行して差分を小さく保つ前提 |
+| クライアント検出 | クライアント変数が別ファイルで生成されている場合は変数名から推定する。命名が特殊だと取りこぼす |
+| サンドボックス | 兄弟コンテナ方式のためアプリコンテナに Docker ソケットを渡している（[トレードオフ](#サンドボックス実行)） |
+| 修正の意味的な妥当性 | LLM は最小限の書き換えではなく、別エンドポイントへの移行を選ぶことがある。動作は変わるためレビューが必要 |
+| 再現テストの正解データ | 人手で確認した範囲のみ。`expected` に無いファイルは採点対象外 |
+
+自動修正はレビューを置き換えるものではなく、**レビューの起点を作るもの**として設計している。
+PR 概要欄の 4 節目（信頼性について）で、自動では判断できなかった箇所を必ず明示するのはそのため。
+
 ## 環境変数
 
 プロジェクト直下の `.env` に記述する（`.gitignore` 済み）。
@@ -682,16 +959,12 @@ docker build --target prod -t api-update:prod .
 | `SLACK_OPENAPI_URL` | slack-api-specs の web-api | 監視対象スペックの上書き |
 | `DB_PORT` / `REDIS_PORT` | `5432` / `6379` | ホスト側に公開するポート（衝突時のみ変更） |
 
-### 最小構成の例
-
-```bash
-cat > .env <<'EOF'
-DATABASE_URL=postgres://api_update:api_update@db:5432/api_update
-REDIS_URL=redis://redis:6379
-NODE_ENV=development
-LOG_LEVEL=debug
-EOF
-```
+最小構成は[セットアップ](#セットアップ)を参照。
 
 `GITHUB_APP_PRIVATE_KEY` は複数行の PEM のため、改行を `\n` に置き換えて 1 行で記述するか、
 ダブルクォートで囲んで実際の改行を含める。
+
+---
+
+個人開発のプロジェクトです。実運用での利用はご自身の判断でお願いします。
+不具合の報告や改善案は Issue へどうぞ。

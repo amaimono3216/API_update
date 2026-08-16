@@ -232,13 +232,16 @@ function interleavedBases(prefix: string, segments: string[]): string[] {
  * `client.chat.postMessage()` → `/chat.postMessage` のように、
  * 呼び出しチェーンをドット結合したものがパスになる SDK 向け（Slack の Node SDK）。
  */
-export function dottedMethodResolver(options: { pathPrefix?: string } = {}): PathResolver {
+export function dottedMethodResolver(options: { pathPrefix?: string; ignoredSegments?: string[] } = {}): PathResolver {
   const prefix = options.pathPrefix ?? '';
+  const ignored = options.ignoredSegments ?? [];
 
   return (chain, index) => {
-    if (chain.length < 2) return undefined;
+    // Bolt は `app.client.chat.postMessage` と、間に Web API クライアントを挟む
+    const segments = chain.filter((s) => !ignored.includes(s));
+    if (segments.length < 2) return undefined;
     // Slack Web API は POST が基本だが、一部 GET のみの操作がある
-    return index.lookupAny(`${prefix}/${chain.join('.')}`, ['post', 'get']);
+    return index.lookupAny(`${prefix}/${segments.join('.')}`, ['post', 'get']);
   };
 }
 
@@ -554,9 +557,11 @@ export const SDK_CONVENTIONS: SdkConvention[] = [
   {
     provider: 'slack',
     language: 'typescript',
-    modules: ['@slack/web-api'],
-    clientNames: ['slack', 'web', 'webclient'],
-    resolve: dottedMethodResolver(),
+    // Bolt 経由の利用が多いため、フレームワーク側の import も対象にする
+    modules: ['@slack/web-api', '@slack/bolt'],
+    // Bolt のリスナーは `client` という名前で Web API クライアントを渡してくる
+    clientNames: ['slack', 'web', 'webclient', 'client'],
+    resolve: dottedMethodResolver({ ignoredSegments: ['client'] }),
   },
   {
     provider: 'twilio',
@@ -591,8 +596,8 @@ export const SDK_CONVENTIONS: SdkConvention[] = [
   {
     provider: 'slack',
     language: 'python',
-    modules: ['slack_sdk', 'slack_sdk.web'],
-    clientNames: ['slack', 'webclient'],
+    modules: ['slack_sdk', 'slack_sdk.web', 'slack_bolt'],
+    clientNames: ['slack', 'webclient', 'client'],
     // Python 版は `client.chat_postMessage(...)` とアンダースコア記法
     resolve: underscoreMethodResolver(),
   },

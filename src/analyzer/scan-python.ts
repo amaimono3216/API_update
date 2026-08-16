@@ -186,6 +186,12 @@ function runWith(bin: string, payload: string): Promise<ExtractedFile[]> {
       }
     });
 
+    // 起動に失敗した実行ファイル（Windows の python3 スタブなど）は入力を書き切る前に
+    // 終了する。既定では unhandled error でプロセスごと落ちるため、必ず拾う。
+    child.stdin.on('error', (error) => {
+      clearTimeout(timer);
+      reject(new Error(`${bin} への入力を書き込めませんでした: ${String(error)}`));
+    });
     child.stdin.end(payload, 'utf8');
   });
 }

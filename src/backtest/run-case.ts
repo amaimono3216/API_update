@@ -5,6 +5,7 @@ import { judgeImpact } from '../analyzer/llm-judge.js';
 import { LocalRepository } from '../analyzer/repository.js';
 import { scanFiles } from '../analyzer/scan.js';
 import { OperationIndex } from '../analyzer/sdk-map.js';
+import type { ImpactCandidate } from '../analyzer/types.js';
 import { diffOpenApi } from '../detector/diff.js';
 import { checkoutRepository } from './checkout.js';
 import { scoreAgainstExpected } from './score.js';
@@ -77,14 +78,7 @@ export async function runCase(testCase: BacktestCase, options: RunOptions, log: 
     base.callSites = callSites.length;
     base.candidates = candidates.length;
     base.directMatches = candidates.filter((c) => c.match === 'direct').length;
-    // 変更側の operations は共有スキーマ経由で多数になりうるため、
-    // 実際に突合したのは呼び出し側が解決した操作の方
-    base.candidateSummaries = candidates.map(
-      (c) =>
-        `${c.callSite.file}:${c.callSite.line} ${c.callSite.chain.join('.')} ` +
-        `→ ${c.callSite.operation?.method.toUpperCase() ?? '?'} ${c.callSite.operation?.path ?? '?'} ` +
-        `／ ${c.change.kind}${c.change.propertyPath ? ` ${c.change.propertyPath}` : ''} (${c.match})`,
-    );
+    base.candidateSummaries = summarizeByFile(candidates);
 
     log.info(
       {
@@ -121,4 +115,40 @@ export async function runCase(testCase: BacktestCase, options: RunOptions, log: 
   } finally {
     await checkout?.dispose();
   }
+}
+
+/**
+ * 候補をファイル単位にまとめる。
+ *
+ * 1 つの呼び出しが複数の変更に引っかかると候補は容易に数十件になるが、
+ * `expected` はファイル単位で書くため、そのまま並べても使いにくい。
+ */
+function summarizeByFile(candidates: ImpactCandidate[]): string[] {
+  const byFile = new Map<string, { count: number; direct: number; operations: Set<string>; properties: Set<string> }>();
+
+  for (const c of candidates) {
+    const entry = byFile.get(c.callSite.file) ?? {
+      count: 0,
+      direct: 0,
+      operations: new Set<string>(),
+      properties: new Set<string>(),
+    };
+    entry.count += 1;
+    if (c.match === 'direct') entry.direct += 1;
+    // 変更側の operations は共有スキーマ経由で多数になりうるため、
+    // 実際に突合したのは呼び出し側が解決した操作の方
+    if (c.callSite.operation) {
+      entry.operations.add(`${c.callSite.operation.method.toUpperCase()} ${c.callSite.operation.path}`);
+    }
+    if (c.change.propertyPath) entry.properties.add(c.change.propertyPath);
+    byFile.set(c.callSite.file, entry);
+  }
+
+  return [...byFile.entries()].map(([file, e]) => {
+    const properties = [...e.properties].slice(0, 4).join(', ') || '(項目なし)';
+    return (
+      `${file} … 候補 ${e.count} 件${e.direct > 0 ? `（うち direct ${e.direct}）` : ''} ` +
+      `｜ ${[...e.operations].join(' / ')} ｜ ${properties}`
+    );
+  });
 }

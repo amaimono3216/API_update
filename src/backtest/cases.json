@@ -14,7 +14,9 @@
       },
       "expected": {
         "affectedFiles": [],
-        "notAffectedFiles": ["server.js"]
+        "notAffectedFiles": [
+          "server.js"
+        ]
       }
     },
     {
@@ -44,7 +46,521 @@
       },
       "expected": {
         "affectedFiles": [],
-        "notAffectedFiles": ["server.go"]
+        "notAffectedFiles": [
+          "server.go"
+        ]
+      }
+    },
+    {
+      "id": "openai-2026-tool-call-error-type-removed",
+      "description": "変更は /responses と /conversations のみ。サンプルはこれらを呼んでいないので候補 0 になるべき（無駄な LLM 呼び出しをしない）",
+      "provider": "openai",
+      "spec": {
+        "from": "23e6f5b4641b7e0a62e879de867c8bac98cf8bd7",
+        "to": "c09464730ad6c1a8a8ede868bb199ea53029853b"
+      },
+      "repository": {
+        "url": "https://github.com/openai/openai-quickstart-node"
+      }
+    },
+    {
+      "id": "openai-2026-service-tier-removed",
+      "description": "post /chat/completions から service_tier が削除された変更。サンプルは渡していないので影響なしと判定できるか",
+      "provider": "openai",
+      "spec": {
+        "from": "b9fc3bcfd692e77853137f9dfd99e77063f8190c",
+        "to": "2186421dca0cca7c1e67caa7739005e8b1ccc4dd"
+      },
+      "repository": {
+        "url": "https://github.com/openai/openai-quickstart-node"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "chat_completions/function_calling.js",
+          "chat_completions/index.js",
+          "chat_completions/multi_turn.js",
+          "chat_completions/vision.js",
+          "fine_tuning/use_model.js"
+        ]
+      }
+    },
+    {
+      "id": "twilio-2025-2026-usage-records",
+      "description": "UsageCategory が enum から string へ緩和された変更。既存の値はそのまま通るので全件影響なしと判定できるか",
+      "provider": "twilio",
+      "spec": {
+        "from": "a3f1069b339ca18149582503c9b4174d256581e0",
+        "to": "591755b562834daae097da2371e821f349c5f489"
+      },
+      "repository": {
+        "url": "https://github.com/TwilioDevEd/api-snippets",
+        "subdirectory": "rest"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "usage-triggers/list-post-example-1/list-post-example-1.5.x.js",
+          "usage-triggers/list-post-example-1/list-post-example-1.9.x.py",
+          "usage-triggers/list-get-example-1/list-get-example-1.5.x.js",
+          "usage-triggers/list-get-example-1/list-get-example-1.9.x.py",
+          "usage-records/list-get-example-1/list-get-example-1.5.x.js",
+          "usage-records/list-get-example-2/list-get-example-2.5.x.js",
+          "usage-records/list-get-example-2/list-get-example-2.9.x.py",
+          "usage-records/list-get-example-3/list-get-example-3.5.x.js",
+          "usage-records/list-get-example-3/list-get-example-3.9.x.py",
+          "usage-records/list-get-example-4/list-get-example-4.5.x.js",
+          "usage-records/list-get-example-4/list-get-example-4.9.x.py",
+          "usage-records/list-get-example-5/list-get-example-5.5.x.js",
+          "usage-records/list-get-example-5/list-get-example-5.9.x.py"
+        ]
+      }
+    },
+    {
+      "id": "slack-2020-web-api",
+      "description": "chat.postMessage のレスポンス側の変更 (replies 削除 / first_name 型変更)。Bolt のサンプルは戻り値をログ出力するだけなので影響なし",
+      "provider": "slack",
+      "spec": {
+        "from": "9d979d927895de5cf18a93f4b81a96a871e543db",
+        "to": "3f1e8b4a03855cb29cffbfcaf60195e5867780ea"
+      },
+      "repository": {
+        "url": "https://github.com/slackapi/bolt-js",
+        "subdirectory": "examples"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "getting-started-typescript/src/basic.ts"
+        ]
+      }
+    },
+    {
+      "id": "stripe-accept-custom-node-ts",
+      "description": "Stripe 基準版 → master の差分に対する TypeScript 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "custom-payment-flow/server/node-typescript"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "src/server.ts"
+        ]
+      }
+    },
+    {
+      "id": "stripe-accept-custom-nextjs",
+      "description": "Stripe 基準版 → master の差分に対する Next.js の Route Handler",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "custom-payment-flow/server/nextjs"
+      }
+    },
+    {
+      "id": "stripe-accept-custom-go",
+      "description": "Stripe 基準版 → master の差分に対する Go 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "custom-payment-flow/server/go"
+      }
+    },
+    {
+      "id": "stripe-accept-element-node",
+      "description": "Stripe 基準版 → master の差分に対する Payment Element の Node 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "payment-element/server/node"
+      }
+    },
+    {
+      "id": "stripe-accept-element-python",
+      "description": "Stripe 基準版 → master の差分に対する Payment Element の Python 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "payment-element/server/python"
+      }
+    },
+    {
+      "id": "stripe-accept-element-go",
+      "description": "Stripe 基準版 → master の差分に対する Payment Element の Go 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "payment-element/server/go"
+      }
+    },
+    {
+      "id": "stripe-accept-prebuilt-node",
+      "description": "Stripe 基準版 → master の差分に対する Checkout ページの Node 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "prebuilt-checkout-page/server/node"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.js"
+        ]
+      }
+    },
+    {
+      "id": "stripe-accept-prebuilt-python",
+      "description": "Stripe 基準版 → master の差分に対する Checkout ページの Python 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "prebuilt-checkout-page/server/python"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.py"
+        ]
+      }
+    },
+    {
+      "id": "stripe-accept-elements-sessions-node",
+      "description": "Stripe 基準版 → master の差分に対する Checkout Session + Elements",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "elements-with-checkout-sessions/server/node"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.js"
+        ]
+      }
+    },
+    {
+      "id": "stripe-checkout-node",
+      "description": "Stripe 基準版 → master の差分に対する 単発決済の Node 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/checkout-one-time-payments",
+        "subdirectory": "server/node"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.js"
+        ]
+      }
+    },
+    {
+      "id": "stripe-checkout-python",
+      "description": "Stripe 基準版 → master の差分に対する 単発決済の Python 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/checkout-one-time-payments",
+        "subdirectory": "server/python"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.py"
+        ]
+      }
+    },
+    {
+      "id": "stripe-checkout-nextjs",
+      "description": "Stripe 基準版 → master の差分に対する 単発決済の Next.js 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/checkout-one-time-payments",
+        "subdirectory": "server/nextjs"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "app/api/create-checkout-session/route.ts"
+        ]
+      }
+    },
+    {
+      "id": "stripe-subscription-fixed-node",
+      "description": "Stripe 基準版 → master の差分に対する 定額サブスクの Node 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/subscription-use-cases",
+        "subdirectory": "fixed-price-subscriptions/server/node"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.js"
+        ]
+      }
+    },
+    {
+      "id": "stripe-subscription-fixed-python",
+      "description": "Stripe 基準版 → master の差分に対する 定額サブスクの Python 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/subscription-use-cases",
+        "subdirectory": "fixed-price-subscriptions/server/python"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.py"
+        ]
+      }
+    },
+    {
+      "id": "stripe-subscription-fixed-go",
+      "description": "Stripe 基準版 → master の差分に対する 定額サブスクの Go 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/subscription-use-cases",
+        "subdirectory": "fixed-price-subscriptions/server/go"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.go"
+        ]
+      }
+    },
+    {
+      "id": "stripe-subscription-usage-legacy-node",
+      "description": "Stripe 基準版 → master の差分に対する 従量課金（旧方式）の Node 実装。共有スキーマ由来の iin / description / issuer / stored_credential_usage が 24 候補になるが、いずれも渡しても読んでもいない",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/subscription-use-cases",
+        "subdirectory": "usage-based-subscriptions-legacy/server/node"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "server.js"
+        ]
+      }
+    },
+    {
+      "id": "stripe-subscription-usage-nextjs",
+      "description": "Stripe 基準版 → master の差分に対する 従量課金（Meter）の Next.js 実装",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/subscription-use-cases",
+        "subdirectory": "usage-based-subscriptions/server/nextjs"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "app/api/create-customer/route.ts"
+        ]
+      }
+    },
+    {
+      "id": "openai-quickstart-python",
+      "description": "OpenAI 2026-07 → 2026-08 の差分に対する Assistants / Chat の Python 実装",
+      "provider": "openai",
+      "spec": {
+        "from": "b9fc3bcfd692e77853137f9dfd99e77063f8190c",
+        "to": "2186421dca0cca7c1e67caa7739005e8b1ccc4dd"
+      },
+      "repository": {
+        "url": "https://github.com/openai/openai-quickstart-python",
+        "subdirectory": "examples"
+      }
+    },
+    {
+      "id": "twilio-calls",
+      "description": "Twilio 2025-08 → 2026-08 の差分に対する Voice のスニペット群",
+      "provider": "twilio",
+      "spec": {
+        "from": "a3f1069b339ca18149582503c9b4174d256581e0",
+        "to": "591755b562834daae097da2371e821f349c5f489"
+      },
+      "repository": {
+        "url": "https://github.com/TwilioDevEd/api-snippets",
+        "subdirectory": "rest/call"
+      }
+    },
+    {
+      "id": "twilio-messages",
+      "description": "Twilio 2025-08 → 2026-08 の差分に対する Messaging のスニペット群",
+      "provider": "twilio",
+      "spec": {
+        "from": "a3f1069b339ca18149582503c9b4174d256581e0",
+        "to": "591755b562834daae097da2371e821f349c5f489"
+      },
+      "repository": {
+        "url": "https://github.com/TwilioDevEd/api-snippets",
+        "subdirectory": "rest/messages"
+      }
+    },
+    {
+      "id": "twilio-phone-numbers",
+      "description": "Twilio 2025-08 → 2026-08 の差分に対する 電話番号管理のスニペット群",
+      "provider": "twilio",
+      "spec": {
+        "from": "a3f1069b339ca18149582503c9b4174d256581e0",
+        "to": "591755b562834daae097da2371e821f349c5f489"
+      },
+      "repository": {
+        "url": "https://github.com/TwilioDevEd/api-snippets",
+        "subdirectory": "rest/incoming-phone-numbers"
+      }
+    },
+    {
+      "id": "slack-bolt-python",
+      "description": "Slack 2020-03 → 2020-04 の差分に対する Bolt for Python のサンプル。token / channel の必須化、thread_ts の number→string。コードは既に文字列を渡しており適合済み",
+      "provider": "slack",
+      "spec": {
+        "from": "9d979d927895de5cf18a93f4b81a96a871e543db",
+        "to": "3f1e8b4a03855cb29cffbfcaf60195e5867780ea"
+      },
+      "repository": {
+        "url": "https://github.com/slackapi/bolt-python",
+        "subdirectory": "examples/assistants"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "async_interaction_app.py",
+          "interaction_app.py"
+        ]
+      }
+    },
+    {
+      "id": "slack-sdk-python-samples",
+      "description": "Slack 2020-03 → 2020-04 の差分に対する WebClient の基本用例。必須化と number→string の型修正が 19 件 direct 一致するが、コードは既に適合している",
+      "provider": "slack",
+      "spec": {
+        "from": "9d979d927895de5cf18a93f4b81a96a871e543db",
+        "to": "3f1e8b4a03855cb29cffbfcaf60195e5867780ea"
+      },
+      "repository": {
+        "url": "https://github.com/slackapi/python-slack-sdk",
+        "subdirectory": "integration_tests/samples/basic_usage"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": [
+          "sending_a_message.py",
+          "emoji_reactions.py",
+          "rate_limits.py",
+          "uploading_files.py",
+          "users.py"
+        ]
+      }
+    },
+    {
+      "id": "stripe-2019-checkout-line-items-legacy",
+      "description": "2019 年当時のサンプルに 2021 年の仕様変更（line_items の amount/name/currency 削除）を当てる。実際に壊れるケース",
+      "provider": "stripe",
+      "spec": {
+        "from": "d387fb313ba9c93bf3b2342b13773d262d9cfe0b",
+        "to": "d70de345383dd818a0ce831f4e20d375c5a90cec"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/checkout-one-time-payments",
+        "ref": "5cc0e1a87425610360e831f17b76cd10164c5c96",
+        "subdirectory": "client-and-server/server/node"
+      },
+      "expected": {
+        "affectedFiles": [
+          "server.js"
+        ],
+        "notAffectedFiles": []
+      }
+    },
+    {
+      "id": "stripe-2019-checkout-line-items-legacy-python",
+      "description": "同じ変更に対する 2019 年当時の Python 実装（stripe.checkout.Session.create のクラス記法）。実際に壊れるケース",
+      "provider": "stripe",
+      "spec": {
+        "from": "d387fb313ba9c93bf3b2342b13773d262d9cfe0b",
+        "to": "d70de345383dd818a0ce831f4e20d375c5a90cec"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/checkout-one-time-payments",
+        "ref": "5cc0e1a87425610360e831f17b76cd10164c5c96",
+        "subdirectory": "client-and-server/server/python"
+      },
+      "expected": {
+        "affectedFiles": [
+          "server.py"
+        ],
+        "notAffectedFiles": []
       }
     }
   ]

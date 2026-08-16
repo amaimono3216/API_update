@@ -57,6 +57,34 @@ describe('diffSchema', () => {
     assert.deepEqual(deltas.map((d) => d.kind).sort(), ['enum_value_added', 'enum_value_removed']);
   });
 
+  describe('enum を指す $ref と素の型の入れ替わり', () => {
+    const enumSchema = { type: 'string', enum: ['sms', 'calls'] };
+    const resolvers = {
+      resolveBefore: (ref: string) => (ref === '#/components/schemas/category' ? enumSchema : undefined),
+      resolveAfter: (ref: string) => (ref === '#/components/schemas/category' ? enumSchema : undefined),
+    };
+
+    it('列挙が外れた場合は制約の解除として扱う', () => {
+      const deltas = diffSchema({ $ref: '#/components/schemas/category' }, { type: 'string' }, '', resolvers);
+      assert.equal(deltas[0]?.kind, 'enum_constraint_removed');
+    });
+
+    it('列挙に限定された場合は制約の追加として扱う', () => {
+      const deltas = diffSchema({ type: 'string' }, { $ref: '#/components/schemas/category' }, '', resolvers);
+      assert.equal(deltas[0]?.kind, 'enum_constraint_added');
+    });
+
+    it('基底型まで変わる場合は型変更のまま', () => {
+      const deltas = diffSchema({ $ref: '#/components/schemas/category' }, { type: 'integer' }, '', resolvers);
+      assert.equal(deltas[0]?.kind, 'property_type_changed');
+    });
+
+    it('参照先を解決できない場合は型変更のまま', () => {
+      const deltas = diffSchema({ $ref: '#/components/schemas/unknown' }, { type: 'string' }, '', resolvers);
+      assert.equal(deltas[0]?.kind, 'property_type_changed');
+    });
+  });
+
   it('nullable と type 配列を同じ正規形として扱う', () => {
     assert.equal(diffSchema({ type: 'string', nullable: true }, { type: ['string', 'null'] }).length, 0);
   });
