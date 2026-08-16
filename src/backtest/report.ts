@@ -1,5 +1,8 @@
 import type { CaseResult } from './types.js';
 
+/** 候補が多いケースで出力が読めなくなるため、一覧はここで打ち切る。 */
+const MAX_LISTED_CANDIDATES = 20;
+
 /** 集計結果を人が読める形にする。 */
 export function formatReport(results: CaseResult[]): string {
   const lines: string[] = ['', '='.repeat(78), '再現テストの結果', '='.repeat(78), ''];
@@ -28,7 +31,9 @@ export function formatReport(results: CaseResult[]): string {
     } else {
       lines.push('   判定: 静的解析のみ（LLM 未実行）');
       // 正解データを書くための手がかりとして、何が候補になったかを見せる
-      for (const summary of result.candidateSummaries) lines.push(`     ${summary}`);
+      for (const summary of result.candidateSummaries.slice(0, MAX_LISTED_CANDIDATES)) lines.push(`     ${summary}`);
+      const hidden = result.candidateSummaries.length - MAX_LISTED_CANDIDATES;
+      if (hidden > 0) lines.push(`     … 他 ${hidden} 件`);
     }
 
     if (result.score) {

@@ -1,5 +1,5 @@
 import { RefIndex, iterateOperations, type RefDirection } from './ref-index.js';
-import { diffSchema, type SchemaDelta } from './schema-diff.js';
+import { diffSchema, type RefResolver, type SchemaDelta } from './schema-diff.js';
 import {
   HTTP_METHODS,
   type BreakingChange,
@@ -35,6 +35,9 @@ function classify(kind: BreakingChangeKind, direction: RefDirection): Severity |
     required_removed: { request: null, response: 'breaking' },
     enum_value_removed: { request: 'breaking', response: 'warning' },
     enum_value_added: { request: null, response: 'warning' },
+    // enum → 素の型。リクエストは緩和なので無害、レスポンスは未知の値が来うる
+    enum_constraint_removed: { request: null, response: 'warning' },
+    enum_constraint_added: { request: 'breaking', response: 'warning' },
     operation_deprecated: { request: 'warning', response: 'warning' },
   };
   const entry = table[kind];
@@ -82,6 +85,10 @@ function describe(kind: BreakingChangeKind, location: string, before: JsonValue 
       return `${location} から許容値 ${fmt(before)} が削除されました。`;
     case 'enum_value_added':
       return `${location} に新しい値 ${fmt(after)} が追加されました。`;
+    case 'enum_constraint_removed':
+      return `${location} の許容値の列挙 (${fmt(before)}) が外れ、${fmt(after)} 一般になりました。`;
+    case 'enum_constraint_added':
+      return `${location} が ${fmt(before)} 一般から許容値 ${fmt(after)} の列挙に限定されました。`;
     case 'response_status_removed':
       return `${location} のレスポンスが返らなくなりました。`;
     case 'operation_deprecated':
@@ -124,6 +131,20 @@ function toChange(
 
 const paramKey = (p: { in?: string; name?: string }): string => `${p.in ?? 'query'}:${p.name ?? ''}`;
 
+interface SchemaResolvers {
+  resolveBefore: RefResolver;
+  resolveAfter: RefResolver;
+}
+
+/** `#/components/schemas/X` を引く。他形式の `$ref` は解決しない（外部参照は扱わない）。 */
+function schemaResolver(doc: OpenApiDocument): RefResolver {
+  const schemas = doc.components?.schemas ?? {};
+  return (ref) => {
+    const name = ref.startsWith('#/components/schemas/') ? ref.slice('#/components/schemas/'.length) : undefined;
+    return name ? schemas[name] : undefined;
+  };
+}
+
 const isSuccessStatus = (status: string): boolean => status.startsWith('2');
 
 /** リクエスト側の deltas とレスポンス側の deltas をまとめて BreakingChange に変換する。 */
@@ -157,6 +178,10 @@ function operationsOf(path: string, pathItem: unknown): OperationRef[] {
 /** 新旧 2 つの OpenAPI ドキュメントを比較し、破壊的変更を抽出する。 */
 export function diffOpenApi(before: OpenApiDocument, after: OpenApiDocument): SpecDiff {
   const changes: BreakingChange[] = [];
+  const resolvers: SchemaResolvers = {
+    resolveBefore: schemaResolver(before),
+    resolveAfter: schemaResolver(after),
+  };
 
   // ---- パス / 操作の削除 ----
   const afterPaths = after.paths ?? {};
@@ -178,7 +203,7 @@ export function diffOpenApi(before: OpenApiDocument, after: OpenApiDocument): Sp
         if (change) changes.push(change);
         continue;
       }
-      changes.push(...diffOperation(ref, beforeOp, afterOp));
+      changes.push(...diffOperation(ref, beforeOp, afterOp, resolvers));
     }
   }
 
@@ -197,7 +222,7 @@ export function diffOpenApi(before: OpenApiDocument, after: OpenApiDocument): Sp
       continue;
     }
 
-    const deltas = diffSchema(beforeSchema, afterSchema);
+    const deltas = diffSchema(beforeSchema, afterSchema, '', resolvers);
     if (deltas.length === 0) continue;
     changes.push(...deltasToChanges(deltas, direction, name, operations));
   }
@@ -209,7 +234,12 @@ export function diffOpenApi(before: OpenApiDocument, after: OpenApiDocument): Sp
   };
 }
 
-function diffOperation(ref: OperationRef, before: OpenApiOperation, after: OpenApiOperation): BreakingChange[] {
+function diffOperation(
+  ref: OperationRef,
+  before: OpenApiOperation,
+  after: OpenApiOperation,
+  resolvers: SchemaResolvers,
+): BreakingChange[] {
   const changes: BreakingChange[] = [];
   const ops = [ref];
   const push = (c: BreakingChange | null): void => {
@@ -230,7 +260,7 @@ function diffOperation(ref: OperationRef, before: OpenApiOperation, after: OpenA
     if (afterParam.required === true && beforeParam.required !== true) {
       push(toChange('parameter_required_added', 'request', loc, ops, false, true));
     }
-    changes.push(...deltasToChanges(diffSchema(beforeParam.schema, afterParam.schema), 'request', loc, ops));
+    changes.push(...deltasToChanges(diffSchema(beforeParam.schema, afterParam.schema, '', resolvers), 'request', loc, ops));
   }
   for (const [key, afterParam] of afterParams) {
     if (afterParam.required === true && !beforeParams.has(key)) {
@@ -252,7 +282,7 @@ function diffOperation(ref: OperationRef, before: OpenApiOperation, after: OpenA
         continue;
       }
       const loc = `${label(ref)} requestBody`;
-      changes.push(...deltasToChanges(diffSchema(beforeMedia.schema, afterMedia.schema), 'request', loc, ops));
+      changes.push(...deltasToChanges(diffSchema(beforeMedia.schema, afterMedia.schema, '', resolvers), 'request', loc, ops));
     }
   }
 
@@ -268,7 +298,7 @@ function diffOperation(ref: OperationRef, before: OpenApiOperation, after: OpenA
       const afterMedia = afterRes.content?.[contentType];
       if (!afterMedia) continue;
       const loc = `${label(ref)} responses.${status}`;
-      changes.push(...deltasToChanges(diffSchema(beforeMedia.schema, afterMedia.schema), 'response', loc, ops));
+      changes.push(...deltasToChanges(diffSchema(beforeMedia.schema, afterMedia.schema, '', resolvers), 'response', loc, ops));
     }
   }
 

@@ -56,7 +56,10 @@ export function scanSource(filePath: string, sourceText: string, index: Operatio
   return callSites;
 }
 
-/** `import Stripe from 'stripe'` の `Stripe` のように、SDK クラスを指す識別子を集める。 */
+/**
+ * `import Stripe from 'stripe'` の `Stripe` のように、SDK クラスを指す識別子を集める。
+ * CommonJS の `const { App } = require('@slack/bolt')` も同じ扱いにする。
+ */
 function collectSdkClasses(sourceFile: ts.SourceFile): Map<string, SdkConvention> {
   const classes = new Map<string, SdkConvention>();
 
@@ -72,6 +75,23 @@ function collectSdkClasses(sourceFile: ts.SourceFile): Map<string, SdkConvention
       for (const element of bindings.namedBindings.elements) classes.set(element.name.text, convention);
     }
   }
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer)) {
+      const convention = isRequireCall(node.initializer) ? conventionFromRequire(node.initializer) : undefined;
+      if (convention) {
+        if (ts.isIdentifier(node.name)) classes.set(node.name.text, convention);
+        if (ts.isObjectBindingPattern(node.name)) {
+          for (const element of node.name.elements) {
+            if (ts.isIdentifier(element.name)) classes.set(element.name.text, convention);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
   return classes;
 }
 

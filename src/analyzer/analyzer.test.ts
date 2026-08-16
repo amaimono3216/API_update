@@ -137,6 +137,41 @@ describe('プロバイダごとのパス解決', () => {
   });
 });
 
+describe('scanSource（Slack Bolt）', () => {
+  const slackIndex = new OperationIndex({
+    openapi: '3.0.0',
+    paths: { '/chat.postMessage': { post: {} } },
+    components: { schemas: {} },
+  });
+
+  it('app.client 経由の呼び出しを検出する', () => {
+    const source = `
+      const { App } = require('@slack/bolt');
+      const app = new App({ token: process.env.SLACK_BOT_TOKEN });
+
+      app.event('team_join', async ({ event }) => {
+        await app.client.chat.postMessage({ channel: 'C1', text: 'hi' });
+      });
+    `;
+    const sites = scanSource('app.js', source, slackIndex);
+    assert.equal(sites.length, 1);
+    assert.equal(sites[0]?.operation?.path, '/chat.postMessage');
+  });
+
+  it('リスナーに渡される client からの呼び出しも検出する', () => {
+    // Bolt は listener の引数で Web API クライアントを渡すため、
+    // ファイル内に生成箇所が現れない
+    const source = `
+      app.event('reaction_added', async ({ event, client }) => {
+        await client.chat.postMessage({ channel: 'C1', text: 'hi' });
+      });
+    `;
+    const sites = scanSource('app.js', source, slackIndex);
+    assert.equal(sites.length, 1);
+    assert.equal(sites[0]?.operation?.path, '/chat.postMessage');
+  });
+});
+
 describe('scanSource', () => {
   it('import と new から生成したクライアントの呼び出しを検出する', () => {
     const source = `

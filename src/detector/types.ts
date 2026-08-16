@@ -74,6 +74,8 @@ export type BreakingChangeKind =
   | 'required_removed'
   | 'enum_value_removed'
   | 'enum_value_added'
+  | 'enum_constraint_removed'
+  | 'enum_constraint_added'
   | 'response_status_removed'
   | 'operation_deprecated';
 

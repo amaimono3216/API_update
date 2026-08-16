@@ -15,6 +15,12 @@ const IGNORED_DIRECTORIES = new Set([
   '.nuxt',
   'vendor',
   '__pycache__',
+  // リポジトリに仮想環境がコミットされていることがある。依存パッケージ側を
+  // 走査しても意味がなく、時間だけかかる。
+  'env',
+  'venv',
+  'virtualenv',
+  'site-packages',
 ]);
 
 const MAX_FILE_BYTES = 1024 * 1024;

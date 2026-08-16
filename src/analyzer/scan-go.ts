@@ -185,6 +185,12 @@ function runExtractor(files: GoScanInput[]): Promise<ExtractedFile[]> {
       }
     });
 
+    // 解析器が入力を読み切る前に終了した場合、既定では unhandled error で
+    // プロセスごと落ちるため、必ず拾う。
+    child.stdin.on('error', (error) => {
+      clearTimeout(timer);
+      reject(new Error(`解析器への入力を書き込めませんでした: ${String(error)}`));
+    });
     child.stdin.end(JSON.stringify({ files }), 'utf8');
   });
 }

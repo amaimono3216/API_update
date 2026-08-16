@@ -55,7 +55,7 @@ export interface CaseResult {
   callSites: number;
   candidates: number;
   directMatches: number;
-  /** 候補の内訳（`file:line` と対象の操作・項目）。expected を書くための手がかり。 */
+  /** 候補のファイル単位の内訳。expected を書くための手がかり。 */
   candidateSummaries: string[];
 
   /** LLM 判定を行った場合のみ。 */

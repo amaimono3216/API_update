@@ -9,9 +9,14 @@ export interface SchemaDelta {
   after?: JsonValue;
 }
 
+/** `$ref` の参照先を引く。片側だけが `$ref` になった場合の判定に使う。 */
+export type RefResolver = (ref: string) => OpenApiSchema | undefined;
+
 interface DiffOptions {
   /** Stripe のスキーマは相互参照が深いため上限を設ける。 */
   maxDepth: number;
+  resolveBefore?: RefResolver;
+  resolveAfter?: RefResolver;
 }
 
 const DEFAULT_OPTIONS: DiffOptions = { maxDepth: 12 };
@@ -42,6 +47,40 @@ export function diffSchema(
   return walk(before, after, location, 0, opts);
 }
 
+/**
+ * 「enum を指す `$ref`」と「同じ基底型の素の型」の入れ替わりを、型変更ではなく
+ * 制約の増減として扱う。
+ *
+ *   `$ref: usage_category_enum` → `string`  ⇒ 緩和（既存の値はそのまま通る）
+ *   `string` → `$ref: ..._enum`             ⇒ 厳格化（列挙外の値が弾かれる）
+ *
+ * 型変更として一律に破壊的と報告すると、緩和のたびに不要な PR が出るため。
+ * 判別できない場合は undefined を返し、呼び出し側の既定の扱いに任せる。
+ */
+function enumConstraintDelta(
+  before: OpenApiSchema,
+  after: OpenApiSchema,
+  location: string,
+  opts: DiffOptions,
+): SchemaDelta | undefined {
+  const relaxed = Boolean(before.$ref) && !after.$ref;
+  const tightened = Boolean(after.$ref) && !before.$ref;
+  if (relaxed === tightened) return undefined;
+
+  const ref = (relaxed ? before.$ref : after.$ref) as string;
+  const resolve = relaxed ? opts.resolveBefore : opts.resolveAfter;
+  const enumSchema = resolve?.(ref);
+  const plain = relaxed ? after : before;
+
+  if (!enumSchema || !Array.isArray(enumSchema.enum) || Array.isArray(plain.enum)) return undefined;
+  // 基底型まで変わっているなら本当の型変更
+  if (normalizeType(enumSchema) !== normalizeType(plain)) return undefined;
+
+  return relaxed
+    ? { kind: 'enum_constraint_removed', location, before: enumSchema.enum as JsonValue, after: normalizeType(plain) }
+    : { kind: 'enum_constraint_added', location, before: normalizeType(plain), after: enumSchema.enum as JsonValue };
+}
+
 function walk(
   before: OpenApiSchema | undefined,
   after: OpenApiSchema | undefined,
@@ -56,7 +95,7 @@ function walk(
   // --- $ref: 参照先が差し替わった場合のみ型変更として扱う ---
   if (before.$ref || after.$ref) {
     if (before.$ref !== after.$ref) {
-      deltas.push({
+      deltas.push(enumConstraintDelta(before, after, location, opts) ?? {
         kind: 'property_type_changed',
         location,
         before: before.$ref ?? normalizeType(before),
