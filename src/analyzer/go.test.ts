@@ -219,6 +219,32 @@ describe('scanGoFiles', () => {
     assert.deepEqual(sites[0]?.passedParams, ['Model']);
   });
 
+  it('リソースが import パスにある形も解決する', { skip }, async () => {
+    // stripe-go の従来の形。呼び出し側には `session.New` としか現れない
+    const sites = await scan(
+      'checkout.go',
+      [
+        'package main',
+        '',
+        'import (',
+        '\t"github.com/stripe/stripe-go/v84"',
+        '\t"github.com/stripe/stripe-go/v84/checkout/session"',
+        '\t"github.com/stripe/stripe-go/v84/paymentintent"',
+        ')',
+        '',
+        'func start() {',
+        '\ts, _ := session.New(&stripe.CheckoutSessionParams{Mode: stripe.String("payment")})',
+        '\tpaymentintent.New(&stripe.PaymentIntentParams{Amount: stripe.Int64(2000)})',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    assert.equal(sites.length, 2);
+    assert.equal(sites[0]?.operation?.path, '/v1/checkout/sessions');
+    // パッケージ名に区切りが無くても実スペックの `payment_intents` に対応づける
+    assert.equal(sites[1]?.operation?.path, '/v1/payment_intents');
+  });
+
   it('SDK と無関係な呼び出しは拾わない', { skip }, async () => {
     const sites = await scan(
       'other.go',

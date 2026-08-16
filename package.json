@@ -20,7 +20,8 @@
     "verify:github": "tsx src/scripts/verify-github-auth.ts",
     "verify:llm": "tsx src/scripts/verify-llm-offline.ts",
     "generate:slack-go-map": "tsx src/scripts/generate-slack-go-map.ts",
-    "verify:llm:live": "tsx src/scripts/verify-llm-live.ts"
+    "verify:llm:live": "tsx src/scripts/verify-llm-live.ts",
+    "backtest": "tsx src/scripts/backtest.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

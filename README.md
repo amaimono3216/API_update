@@ -492,6 +492,59 @@ GitHub は配信失敗時に**同じ `X-GitHub-Delivery` で再送する**ため
 | `POST` | `/webhooks/github` | GitHub Webhook の受信口 |
 | `GET` | `/webhooks/deliveries` | 受信した Webhook の履歴 |
 
+## 再現テスト（バックテスト）
+
+[src/backtest/](src/backtest/) が、**過去に実際に起きた破壊的変更**を
+**実在の OSS リポジトリ**に当てて ② の判定精度を測る。本番の障害を待たずに
+精度を数字で示すための仕組み。
+
+```bash
+npm run backtest                      # 静的解析のみ（API 課金なし）
+npm run backtest -- --llm             # LLM 判定まで実行
+npm run backtest -- --case <id>       # 1 ケースだけ
+npm run backtest -- --cases <path>    # 別のケース定義を使う
+```
+
+Go の解析器 (`go-extract`) はイメージにしか無いため、Go を含むケースはコンテナで実行する:
+
+```bash
+docker compose run --rm --no-deps app npx tsx src/scripts/backtest.ts
+```
+
+### ケース定義
+
+[src/backtest/cases.json](src/backtest/cases.json) に、比較するスペックの git ref と
+対象リポジトリを書く。`expected` は**人手で確認した内容だけ**を書く
+（誤った正解データは測定そのものを無意味にするため）。
+
+```jsonc
+{
+  "id": "stripe-2026-terminal-refunds-node",
+  "description": "...",
+  "provider": "stripe",
+  "spec": { "from": "<古い ref>", "to": "<新しい ref>" },
+  "repository": { "url": "https://github.com/...", "subdirectory": "server/node" },
+  "expected": {
+    "affectedFiles": ["server.js"],      // 影響ありと判定されるべき
+    "notAffectedFiles": ["webhook.js"]   // 呼び出しはあるが影響は受けない
+  }
+}
+```
+
+`expected` に載っていないファイルは正解にも誤検知にも数えない。「影響なし」と
+確認できていないものを誤検知に数えると、正解データの不足が精度の低さとして現れるため。
+
+### 出力
+
+ケースごとに「破壊的変更 / 走査ファイル数 / SDK 呼び出し数 / 影響候補数」を出す。
+静的解析のみの場合は候補の内訳（`file:line` と対象の操作・項目）も出すので、
+それを見て `expected` を書く。
+
+`expected` があるケースは適合率（誤検知の少なさ）・再現率（見逃しの少なさ）に加えて、
+**不要な PR の回避**（影響なしと分かっているものを正しく除外できた数）を集計する。
+このシステムでは誤検知＝無駄な PR が信頼を最も損なうため、正解が 0 件のケースでも
+除外できたこと自体を成果として数える。
+
 ## 開発
 
 `src/` はバインドマウントされており、`tsx watch` によりコンテナ内で自動リロードされる。
@@ -574,6 +627,13 @@ docker build --target prod -t api-update:prod .
     │   ├── test-summary.ts #   テスト出力からの件数抽出
     │   ├── publisher.ts    #   送信先（dry-run / GitHub App）
     │   └── publish.ts      #   一連の処理のオーケストレーション
+    ├── backtest/           # 過去の破壊的変更を使った再現テスト
+    │   ├── cases.json      #   ケース定義（正解は人手で記入）
+    │   ├── spec-source.ts  #   過去のスペックの取得
+    │   ├── checkout.ts     #   対象リポジトリの浅い取得
+    │   ├── run-case.ts     #   1 ケースの実行
+    │   ├── score.ts        #   期待との突き合わせ
+    │   └── report.ts       #   集計と整形
     ├── webhook/            # GitHub Webhook の受信
     │   ├── verify.ts       #   HMAC-SHA256 による署名検証
     │   ├── github.ts       #   イベントごとの処理

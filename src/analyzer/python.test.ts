@@ -6,15 +6,20 @@ import type { OpenApiDocument } from '../detector/types.js';
 import { scanPythonFiles } from './scan-python.js';
 import { OperationIndex } from './sdk-map.js';
 
-/** Python が無い環境（開発マシンなど）ではスキップする。 */
-const pythonAvailable = spawnSync('python3', ['--version'], { shell: false }).status === 0;
-const skip = pythonAvailable ? false : 'python3 が利用できないためスキップします';
+/** Python が無い環境ではスキップする。実行ファイル名は scan-python 側と同じ候補を試す。 */
+const pythonAvailable = [process.env['PYTHON_BIN'], 'python3', 'python'].some(
+  (bin) => bin && spawnSync(bin, ['--version'], { shell: false }).status === 0,
+);
+const skip = pythonAvailable ? false : 'Python が利用できないためスキップします';
 
 const spec: OpenApiDocument = {
   openapi: '3.0.0',
   paths: {
     '/v1/customers': { post: {}, get: {} },
     '/v1/checkout/sessions': { post: {} },
+    '/v1/payment_intents': { post: {} },
+    '/v1/payment_intents/{intent}': { get: {} },
+    '/v1/tax/calculations': { post: {} },
     '/chat.postMessage': { post: {} },
     '/conversations.list': { get: {} },
     '/chat/completions': { post: {} },
@@ -46,6 +51,25 @@ describe('scanPythonFiles', () => {
       ['import stripe', '', 'stripe.checkout.sessions.create(mode="payment")', ''].join('\n'),
     );
     assert.equal(sites[0]?.operation?.path, '/v1/checkout/sessions');
+  });
+
+  it('旧来のクラス記法を検出する', { skip }, async () => {
+    const sites = await scan(
+      'legacy.py',
+      [
+        'import stripe',
+        '',
+        'intent = stripe.PaymentIntent.create(amount=1000, currency="usd")',
+        'stripe.PaymentIntent.retrieve("pi_1")',
+        'stripe.tax.Calculation.create(currency="usd")',
+        '',
+      ].join('\n'),
+    );
+    assert.equal(sites.length, 3);
+    assert.equal(sites[0]?.operation?.path, '/v1/payment_intents');
+    assert.equal(sites[0]?.operation?.method, 'post');
+    assert.equal(sites[1]?.operation?.path, '/v1/payment_intents/{intent}');
+    assert.equal(sites[2]?.operation?.path, '/v1/tax/calculations');
   });
 
   it('Slack のアンダースコア記法を検出する', { skip }, async () => {
