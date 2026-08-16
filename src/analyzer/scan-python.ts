@@ -135,9 +135,32 @@ function extractSnippet(lines: string[], line: number, endLine: number): string 
   return text.length > MAX_SNIPPET_LENGTH ? `${text.slice(0, MAX_SNIPPET_LENGTH)}…` : text;
 }
 
-function runExtractor(files: PythonScanInput[]): Promise<ExtractedFile[]> {
+/**
+ * インタプリタの実行ファイル名は環境で異なる（Windows には `python3` の名前で
+ * 「未インストール」を案内するだけのスタブが置かれていることがある）ため、
+ * 実際に動いたものを採用する。
+ */
+const PYTHON_CANDIDATES = [process.env['PYTHON_BIN'], 'python3', 'python'].filter(
+  (value): value is string => Boolean(value),
+);
+
+async function runExtractor(files: PythonScanInput[]): Promise<ExtractedFile[]> {
+  const payload = JSON.stringify({ files });
+  let firstError: unknown;
+
+  for (const bin of PYTHON_CANDIDATES) {
+    try {
+      return await runWith(bin, payload);
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  throw firstError ?? new Error('Python インタプリタが見つかりませんでした');
+}
+
+function runWith(bin: string, payload: string): Promise<ExtractedFile[]> {
   return new Promise((resolve, reject) => {
-    const child = spawn('python3', [EXTRACTOR], { shell: false });
+    const child = spawn(bin, [EXTRACTOR], { shell: false });
 
     let stdout = '';
     let stderr = '';
@@ -153,7 +176,7 @@ function runExtractor(files: PythonScanInput[]): Promise<ExtractedFile[]> {
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        reject(new Error(`抽出器が終了コード ${code} で終了しました: ${stderr.slice(0, 500)}`));
+        reject(new Error(`${bin} が終了コード ${code} で終了しました: ${stderr.slice(0, 500)}`));
         return;
       }
       try {
@@ -163,6 +186,6 @@ function runExtractor(files: PythonScanInput[]): Promise<ExtractedFile[]> {
       }
     });
 
-    child.stdin.end(JSON.stringify({ files }), 'utf8');
+    child.stdin.end(payload, 'utf8');
   });
 }

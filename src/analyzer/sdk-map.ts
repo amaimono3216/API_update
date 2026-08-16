@@ -17,12 +17,19 @@ import type { HttpMethod, OpenApiDocument, OperationRef } from '../detector/type
 /** パスパラメータ名はスペックごとに異なる（`{charge}` / `{Sid}`）ため `{}` に正規化する。 */
 const normalizePath = (path: string): string => path.replace(/\{[^}]*\}/g, '{}');
 
+/** 語の区切り記号を落とした形。Go のパッケージ名は区切りを持たない（`paymentintent`）ため。 */
+const squashPath = (path: string): string => path.replace(/[_-]/g, '');
+
+interface IndexEntry {
+  path: string;
+  methods: Set<HttpMethod>;
+  operationIds: Map<HttpMethod, string | undefined>;
+}
+
 /** スペックに実在する操作だけを引けるようにした索引。 */
 export class OperationIndex {
-  private readonly byNormalizedPath = new Map<
-    string,
-    { path: string; methods: Set<HttpMethod>; operationIds: Map<HttpMethod, string | undefined> }
-  >();
+  private readonly byNormalizedPath = new Map<string, IndexEntry>();
+  private readonly bySquashedPath = new Map<string, IndexEntry>();
 
   constructor(doc: OpenApiDocument) {
     for (const { ref } of iterateOperations(doc)) {
@@ -35,14 +42,26 @@ export class OperationIndex {
       entry.methods.add(ref.method);
       entry.operationIds.set(ref.method, ref.operationId);
       this.byNormalizedPath.set(key, entry);
+      // 区切りを落とすと別のパスと衝突しうるので、先に登録された方を残す
+      const squashed = squashPath(key);
+      if (squashed !== key && !this.bySquashedPath.has(squashed)) this.bySquashedPath.set(squashed, entry);
     }
   }
 
   lookup(normalizedPath: string, method: HttpMethod): OperationRef | undefined {
-    const entry = this.byNormalizedPath.get(normalizedPath);
-    if (!entry || !entry.methods.has(method)) return undefined;
-    const operationId = entry.operationIds.get(method);
-    return { method, path: entry.path, ...(operationId ? { operationId } : {}) };
+    return toRef(this.byNormalizedPath.get(normalizedPath), method);
+  }
+
+  /**
+   * 語の区切りを無視して引く。
+   *
+   * Go の stripe-go はリソースを `paymentintent` のようなパッケージ名で表し、
+   * 区切りの位置が失われている。
+   */
+  lookupSquashed(normalizedPath: string, method: HttpMethod): OperationRef | undefined {
+    return (
+      this.lookup(normalizedPath, method) ?? toRef(this.bySquashedPath.get(squashPath(normalizedPath)), method)
+    );
   }
 
   /** 指定したメソッドのうち、最初に見つかったものを返す。 */
@@ -53,6 +72,12 @@ export class OperationIndex {
     }
     return undefined;
   }
+}
+
+function toRef(entry: IndexEntry | undefined, method: HttpMethod): OperationRef | undefined {
+  if (!entry || !entry.methods.has(method)) return undefined;
+  const operationId = entry.operationIds.get(method);
+  return { method, path: entry.path, ...(operationId ? { operationId } : {}) };
 }
 
 /** 呼び出しチェーン（クライアント変数名を除く）から操作を解決する。 */
@@ -72,6 +97,12 @@ export interface SdkConvention {
    */
   clientNames: string[];
   resolve: PathResolver;
+  /**
+   * リソースが呼び出しではなく import パスで表される SDK 向け
+   * （stripe-go の `.../v84/checkout/session`）。
+   * import パスから取り出したセグメントを渡すと、その import 専用の解決関数を返す。
+   */
+  resolveFromPackagePath?: (segments: string[]) => PathResolver;
 }
 
 const camelToSnake = (value: string): string => value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
@@ -141,6 +172,44 @@ export function restNamespaceResolver(options: { pathPrefix: string; ignoredSegm
     }
     return undefined;
   };
+}
+
+/**
+ * `stripe.PaymentIntent.create()` → `/v1/payment_intents` のように、
+ * リソースを単数形のクラス名で表す書き方向けの解決関数。
+ *
+ * Stripe の Python SDK は歴史的にこの形で、現行の `client.v1.payment_intents` 形式と
+ * 併存している。クラス名から単複を機械的には決められないので、候補を作って
+ * 実スペックに存在するものを採用する。
+ */
+export function classNamespaceResolver(options: { pathPrefix: string }): PathResolver {
+  const inner = restNamespaceResolver({ pathPrefix: options.pathPrefix });
+
+  return (chain, index) => {
+    if (chain.length < 2) return undefined;
+
+    const verb = chain[chain.length - 1] as string;
+    const segments = chain.slice(0, -1);
+    // クラス名を含まない呼び出しは現行形式の resolver の担当
+    if (!segments.some((s) => /^[A-Z]/.test(s))) return undefined;
+
+    for (const candidate of segmentVariants(segments)) {
+      const found = inner([...candidate, verb], index);
+      if (found) return found;
+    }
+    return undefined;
+  };
+}
+
+/** PascalCase のセグメントだけを snake_case 化し、単数形・複数形の両方を試す。 */
+function segmentVariants(segments: string[]): string[][] {
+  let variants: string[][] = [[]];
+
+  for (const segment of segments) {
+    const options = /^[A-Z]/.test(segment) ? pluralCandidates(camelToSnake(segment)) : [segment];
+    variants = variants.flatMap((prefix) => options.map((option) => [...prefix, option]));
+  }
+  return variants;
 }
 
 /** 素の連結と、親セグメントごとに ID を挟んだ形の 2 通りを返す。 */
@@ -256,6 +325,45 @@ export function goIdentifierResolver(options: { maxWords?: number } = {}): PathR
     }
     return undefined;
   };
+}
+
+/**
+ * `session.New(params)` → `POST /v1/checkout/sessions` のように、
+ * リソースを呼び出しではなく import パスで表す Go SDK 向け。
+ *
+ * stripe-go はリソースごとにパッケージが分かれており
+ * （`github.com/stripe/stripe-go/v84/checkout/session`）、呼び出し側には
+ * `session.New` としか現れない。パスの情報は import にしか無いため、
+ * import から取り出したセグメントを渡してもらう。
+ */
+export function goPackagePathResolver(segments: string[], options: { pathPrefix?: string } = {}): PathResolver {
+  const prefix = options.pathPrefix ?? '';
+  // パッケージ名は単数形（`session`）、パスは複数形（`sessions`）
+  const bases = pathVariants(segments);
+
+  return (chain, index) => {
+    // `session.New` の 1 段だけを対象にする
+    if (chain.length !== 1) return undefined;
+
+    const rule = GO_VERB_RULES[(chain[0] ?? '').toLowerCase()];
+    if (!rule) return undefined;
+
+    for (const base of bases) {
+      const path = rule.target === 'instance' ? `${prefix}/${base}/{}` : `${prefix}/${base}`;
+      const found = index.lookupSquashed(path, rule.method);
+      if (found) return found;
+    }
+    return undefined;
+  };
+}
+
+/** 末尾セグメントの単数形・複数形を候補にする。 */
+function pathVariants(segments: string[]): string[] {
+  if (segments.length === 0) return [];
+
+  const head = segments.slice(0, -1);
+  const last = segments[segments.length - 1] as string;
+  return pluralCandidates(last).map((word) => [...head, word].join('/'));
 }
 
 /**
@@ -465,10 +573,12 @@ export const SDK_CONVENTIONS: SdkConvention[] = [
     modules: ['stripe'],
     clientNames: ['stripe', 'stripeclient'],
     // StripeClient は `client.v1.customers.create` と、チェーンに v1 を含む。
-    // v1 を含まない旧バージョンの書き方にも対応するため両方試す。
+    // v1 を含まない書き方と、`stripe.PaymentIntent.create` という旧来の
+    // クラス形式も現役なので、順に試す。
     resolve: firstMatchResolver(
       restNamespaceResolver({ pathPrefix: '' }),
       restNamespaceResolver({ pathPrefix: '/v1' }),
+      classNamespaceResolver({ pathPrefix: '/v1' }),
     ),
   },
   {
@@ -518,6 +628,8 @@ export const SDK_CONVENTIONS: SdkConvention[] = [
     clientNames: ['sc', 'stripe'],
     // `sc.V1Customers.Create` のようにパスが 1 語に連結されている
     resolve: goIdentifierResolver(),
+    // 従来はリソースごとにパッケージが分かれており、`session.New(params)` と呼ぶ
+    resolveFromPackagePath: (segments) => goPackagePathResolver(segments, { pathPrefix: '/v1' }),
   },
   {
     provider: 'openai',

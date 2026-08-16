@@ -114,13 +114,35 @@ function resolveConventions(file: ExtractedFile): Map<string, SdkConvention[]> {
   const result = new Map<string, SdkConvention[]>();
   // `sc := stripe.NewClient(key)` のようなクライアント変数
   for (const variable of Object.keys(file.clients)) result.set(variable, imported);
-  // パッケージ名を直接使う形にも備える
+
   for (const entry of file.imports) {
-    if (imported.some((c) => c.modules.some((m) => entry.module.startsWith(m)))) {
-      result.set(entry.name, imported);
-    }
+    const matched = imported.filter((c) => c.modules.some((m) => entry.module.startsWith(m)));
+    if (matched.length === 0) continue;
+
+    // `checkout/session` のようにリソースが import パスに現れる SDK では、
+    // そのパッケージ専用の解決関数を先に試す
+    const specific = matched.flatMap((convention) => {
+      if (!convention.resolveFromPackagePath) return [];
+      const segments = resourceSegments(convention, entry.module);
+      return segments.length === 0 ? [] : [{ ...convention, resolve: convention.resolveFromPackagePath(segments) }];
+    });
+
+    result.set(entry.name, [...specific, ...matched]);
   }
   return result;
+}
+
+/** import パスから、モジュール名とバージョンを除いたリソース部分を取り出す。 */
+function resourceSegments(convention: SdkConvention, importPath: string): string[] {
+  const module = convention.modules.find((m) => importPath.startsWith(m));
+  if (!module) return [];
+
+  return importPath
+    .slice(module.length)
+    .split('/')
+    .filter(Boolean)
+    // `github.com/stripe/stripe-go/v84/...` の `v84`
+    .filter((segment, position) => !(position === 0 && /^v\d+$/.test(segment)));
 }
 
 /** クライアントが別パッケージで生成されている場合に、変数名から推定する。 */

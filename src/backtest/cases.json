@@ -1,0 +1,51 @@
+{
+  "cases": [
+    {
+      "id": "stripe-2026-terminal-refunds-node",
+      "description": "共有スキーマの property_removed (iin) が POST /v1/customers に波及するが、呼び出しは引数なし。影響なしと判定できるか",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "custom-payment-flow/server/node"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": ["server.js"]
+      }
+    },
+    {
+      "id": "stripe-2026-terminal-refunds-python",
+      "description": "同じ差分に対する Python 実装。旧来のクラス記法 (stripe.PaymentIntent.create) を検出できるか",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/accept-a-payment",
+        "subdirectory": "custom-payment-flow/server/python"
+      }
+    },
+    {
+      "id": "stripe-2026-checkout-go",
+      "description": "line_items[].dynamic_tax_rates の削除。Go 実装は Price/Quantity のみ渡すため影響なしと判定できるか",
+      "provider": "stripe",
+      "spec": {
+        "from": "a54c3888eb6f227e15eeaa97d0adbd561b01e2c2",
+        "to": "master"
+      },
+      "repository": {
+        "url": "https://github.com/stripe-samples/checkout-one-time-payments",
+        "subdirectory": "server/go"
+      },
+      "expected": {
+        "affectedFiles": [],
+        "notAffectedFiles": ["server.go"]
+      }
+    }
+  ]
+}
