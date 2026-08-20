@@ -94,7 +94,7 @@ flowchart TD
 必要なのは **Docker と Docker Compose だけ**（Node.js / Python / Go はイメージに含まれる）。
 
 ```bash
-git clone https://github.com/<your-account>/API_update.git
+git clone https://github.com/amaimono3216/API_update.git
 cd API_update
 
 # 最小構成の .env を作る（他の設定は「環境変数」を参照）
